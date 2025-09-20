@@ -27,11 +27,11 @@ jobs:
       - name: Generate icons
         run: cargo tauri icon src-tauri/icon.png
 
-      # Prépare signature (optionnelle)
+      # Prépare la signature (optionnelle)
       - name: Prepare code signing (optional)
         shell: pwsh
         env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}              # .pfx base64
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           if ($env:WINDOWS_CERTIFICATE -and $env:WINDOWS_CERTIFICATE_PASSWORD) {
@@ -40,12 +40,9 @@ jobs:
             certutil -decode certificate\cert.b64 certificate\codesign.pfx | Out-Null
             "TAURI_WIN_CERT_PATH=$(Resolve-Path certificate\codesign.pfx)" | Out-File -FilePath $env:GITHUB_ENV -Append
             "TAURI_WIN_CERT_PASS=$($env:WINDOWS_CERTIFICATE_PASSWORD)" | Out-File -FilePath $env:GITHUB_ENV -Append
-            "GH_ARGS=--bundles app --config src-tauri/tauri.ci.json" | Out-File -FilePath $env:GITHUB_ENV -Append
-          } else {
-            "GH_ARGS=--bundles app" | Out-File -FilePath $env:GITHUB_ENV -Append
           }
 
-      # Build: EXE portable uniquement; signé si secrets présents
+      # Build : uniquement EXE portable; signé si TAURI_WIN_CERT_* présents
       - name: Build portable EXE
         uses: tauri-apps/tauri-action@v0
         env:
@@ -53,12 +50,10 @@ jobs:
           TAURI_WIN_CERT_PATH: ${{ env.TAURI_WIN_CERT_PATH }}
           TAURI_WIN_CERT_PASS: ${{ env.TAURI_WIN_CERT_PASS }}
         with:
-          args: ${{ env.GH_ARGS }}
+          args: --bundles app --config src-tauri/tauri.ci.json
 
       - name: Upload artifacts (portable exe)
         uses: actions/upload-artifact@v4
         with:
           name: tauri-windows-exe
-          path: |
-            src-tauri/target/release/bundle/app/**
-            src-tauri/target/release/*.log
+          path: src-tauri/target/release/bundle/app/**
