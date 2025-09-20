@@ -17,7 +17,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node (pour front éventuel)
+      - name: Setup Node (front éventuel)
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
@@ -25,7 +25,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # Installe la CLI Tauri (nécessaire pour `cargo tauri ...`)
+      # CLI Tauri pour `cargo tauri ...`
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked --version ^1.6
 
@@ -34,7 +34,7 @@ jobs:
         shell: pwsh
         run: |
           choco install nsis -y
-          choco install wix -y
+          choco install wixtoolset -y
 
       # (Optionnel) Build front si package.json existe à la racine
       - name: Install frontend deps
@@ -47,10 +47,8 @@ jobs:
       - name: Generate icons
         run: cargo tauri icon src-tauri/icon.png
 
-      # Import du certificat et exposition du Thumbprint en variable d'env
-      # Secrets requis :
-      #   - WINDOWS_CERTIFICATE : votre PFX encodé en base64
-      #   - WINDOWS_CERTIFICATE_PASSWORD : mot de passe du PFX
+      # Import du certificat (si secrets présents) et expose le Thumbprint
+      # Secrets requis pour signer : WINDOWS_CERTIFICATE (PFX base64), WINDOWS_CERTIFICATE_PASSWORD
       - name: Import code signing certificate
         shell: pwsh
         env:
@@ -58,7 +56,7 @@ jobs:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           if (-not $env:WINDOWS_CERTIFICATE -or -not $env:WINDOWS_CERTIFICATE_PASSWORD) {
-            Write-Host "No signing secrets provided; build will proceed unsigned."
+            Write-Host "No signing secrets provided; proceeding without code signing."
             "WINDOWS_CERTIFICATE_THUMBPRINT=" | Out-File -FilePath $env:GITHUB_ENV -Append
             exit 0
           }
@@ -69,7 +67,7 @@ jobs:
           $cert = Import-PfxCertificate -FilePath certificate\codesign.pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pw
           "WINDOWS_CERTIFICATE_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      # Build Tauri avec la config CI (active la signature)
+      # Build Tauri avec la config CI (active la signature si thumbprint présent)
       - name: Build & Sign (CI config)
         uses: tauri-apps/tauri-action@v0
         env:
