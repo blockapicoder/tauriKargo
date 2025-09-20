@@ -1,18 +1,17 @@
-name: Build (Windows, signed in CI)
+name: Build Windows EXE (signed in CI)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 permissions:
   contents: write
 
 jobs:
-  build-windows:
+  build-windows-exe:
     runs-on: windows-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,14 +22,7 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked --version ^1.6
 
-      # Outils de bundling Windows (NSIS pour .exe, WiX pour .msi)
-      - name: Install NSIS & WiX
-        shell: pwsh
-        run: |
-          choco install nsis -y
-          choco install wixtoolset -y
-
-      # Tu n'as pas de build front : on "stage" les assets statiques vers ./dist (attendu par tauri.conf.json -> ../dist)
+      # Tes HTML sont dans src-tauri/assets → on les copie vers ./dist (attendu par tauri.conf.json -> ../dist)
       - name: Stage web assets to ./dist
         shell: pwsh
         run: |
@@ -38,21 +30,18 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item src-tauri\assets\* dist -Recurse -Force
           if (-not (Test-Path dist\index.html)) { Write-Error "index.html missing in staged dist" }
-          Get-ChildItem -Recurse dist | Select-Object FullName
 
-      # Génère les icônes (créera src-tauri/icons/icon.ico)
       - name: Generate icons
         run: cargo tauri icon src-tauri/icon.png
 
-      # Décode le PFX en fichier et expose les variables pour signCommand (si secrets fournis)
+      # Prépare le PFX (base64) et exporte 2 variables d'env pour signCommand (si secrets fournis)
       - name: Prepare code signing (optional)
         shell: pwsh
         env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}              # PFX encodé base64
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}              # .pfx en base64
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           if (-not $env:WINDOWS_CERTIFICATE -or -not $env:WINDOWS_CERTIFICATE_PASSWORD) {
-            Write-Host "No signing secrets; build will proceed unsigned."
             "TAURI_WIN_CERT_PATH=" | Out-File -FilePath $env:GITHUB_ENV -Append
             "TAURI_WIN_CERT_PASS=" | Out-File -FilePath $env:GITHUB_ENV -Append
             exit 0
@@ -63,8 +52,8 @@ jobs:
           "TAURI_WIN_CERT_PATH=$(Resolve-Path certificate\codesign.pfx)" | Out-File -FilePath $env:GITHUB_ENV -Append
           "TAURI_WIN_CERT_PASS=$($env:WINDOWS_CERTIFICATE_PASSWORD)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      # Build Tauri en utilisant la config CI (signCommand). Si pas de secrets, build non signé.
-      - name: Build & (optionally) Sign
+      # Build (et signature si TAURI_WIN_CERT_* présents)
+      - name: Build portable EXE
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -73,10 +62,10 @@ jobs:
         with:
           args: --config src-tauri/tauri.ci.json
 
-      - name: Upload artifacts
+      - name: Upload artifacts (portable exe)
         uses: actions/upload-artifact@v4
         with:
-          name: tauri-windows-bundles
+          name: tauri-windows-exe
           path: |
-            src-tauri/target/release/bundle/**
+            src-tauri/target/release/bundle/app/**
             src-tauri/target/release/*.log
