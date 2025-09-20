@@ -1,6 +1,7 @@
 {
   "tauri": {
     "bundle": {
+      "targets": ["app"],
       "windows": {
         "digestAlgorithm": "sha256",
         "timestampUrl": "http://timestamp.digicert.com",
