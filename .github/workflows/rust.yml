@@ -15,7 +15,7 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked --version ^1.6
 
-      # Tes HTML sont dans src-tauri/assets → on les copie vers ./dist (attendu par tauri.conf.json -> ../dist)
+      # Tes HTML → ./dist (tauri.conf.json pointe vers ../dist)
       - name: Stage web assets to ./dist
         shell: pwsh
         run: |
@@ -27,11 +27,11 @@ jobs:
       - name: Generate icons
         run: cargo tauri icon src-tauri/icon.png
 
-      # Prépare la signature (optionnelle)
+      # Certificat pour signature (optionnel)
       - name: Prepare code signing (optional)
         shell: pwsh
         env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}              # .pfx base64
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}              # .pfx en base64
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           if ($env:WINDOWS_CERTIFICATE -and $env:WINDOWS_CERTIFICATE_PASSWORD) {
@@ -42,18 +42,23 @@ jobs:
             "TAURI_WIN_CERT_PASS=$($env:WINDOWS_CERTIFICATE_PASSWORD)" | Out-File -FilePath $env:GITHUB_ENV -Append
           }
 
-      # Build : uniquement EXE portable; signé si TAURI_WIN_CERT_* présents
+      # Build portable EXE uniquement; signé si TAURI_WIN_CERT_* présents
       - name: Build portable EXE
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_WIN_CERT_PATH: ${{ env.TAURI_WIN_CERT_PATH }}
           TAURI_WIN_CERT_PASS: ${{ env.TAURI_WIN_CERT_PASS }}
+          TAURI_BUNDLE_TARGETS: app   # force la cible app
         with:
-          args: --bundles app --config src-tauri/tauri.ci.json
+          bundles: app                 # force côté action
+          args: --config src-tauri/tauri.ci.json
 
+      # Upload: on couvre les 2 emplacements possibles de l'exe
       - name: Upload artifacts (portable exe)
         uses: actions/upload-artifact@v4
         with:
           name: tauri-windows-exe
-          path: src-tauri/target/release/bundle/app/**
+          path: |
+            src-tauri/target/release/bundle/app/*.exe
+            src-tauri/target/release/TauriKargo*.exe
