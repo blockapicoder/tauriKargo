@@ -1,53 +1,37 @@
 {
   "build": {
-    "beforeBuildCommand": "",
+    "beforeBuildCommand": "cargo tauri icon src-tauri/icon.png",
     "beforeDevCommand": "",
     "devPath": "../dist",
     "distDir": "../dist"
   },
-  "package": {
-    "productName": "TauriKargo",
-    "version": "0.1.0"
-  },
+  "package": { "productName": "TauriKargo", "version": "0.1.0" },
   "tauri": {
-    "windows": [
-      {
-        "label": "main",
-
-        "resizable": true,
-        "url": "index.html"
-      }
-    ],
+    "windows": [{ "label": "main", "resizable": true, "url": "index.html" }],
     "security": {
-    
       "dangerousRemoteDomainIpcAccess": [
-        {
-          "domain": "http://127.0.0.1",
-          "windows": ["main"],
-          "enableTauriAPI": true
-       
-        },
-        {
-          "domain": "http://localhost",
-          "windows": ["main"],
-          "enableTauriAPI": true
-        }
+        { "domain": "http://127.0.0.1", "windows": ["main"], "enableTauriAPI": true },
+        { "domain": "http://localhost", "windows": ["main"], "enableTauriAPI": true }
       ],
       "csp": null
     },
     "allowlist": {
-      "fs": {
-        "all": true
-      },
-      "shell": {
-        "all": true
-      },
-      "dialog": {
-        "open": true
-      },
-      "path": {
-        "all": true
-      }
+      "fs": { "all": true },
+      "shell": { "all": true },
+      "dialog": { "open": true },
+      "path": { "all": true }
+    },
+    "bundle": {
+      "active": true,
+      "identifier": "com.example.taurikargo",
+      "targets": ["nsis", "msi"],
+      "icon": [
+        "icons/icon.ico",
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/256x256.png"
+      ]
+
     }
   }
 }

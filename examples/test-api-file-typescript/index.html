@@ -1,41 +1,168 @@
 <!doctype html>
 <html lang="fr">
+
 <head>
-  <meta charset="utf-8"/>
+  <meta charset="utf-8" />
   <title>TS Monaco → /api/file → Worker</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    :root { --bg:#0b1020; --panel:#121a30; --muted:#93a1c0; --accent:#4fa3ff; --ok:#1fbf75; --err:#ff6161;}
-    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:#eaf0ff;font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Arial}
-    header{padding:12px 16px;border-bottom:1px solid #1f2b4a;background:#0e1630}
-    h1{margin:0;font-size:16px}
-    .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:10px 16px;background:#0f1730;border-bottom:1px solid #1f2b4a}
-    input[type="text"]{background:#0f1730;border:1px solid #2a375a;border-radius:10px;color:#eaf0ff;padding:8px 10px;min-width:0}
-    .grow{flex:1 1 220px}
-    button{background:var(--accent);border:none;border-radius:10px;color:#fff;font-weight:700;padding:9px 14px;cursor:pointer}
-    button.secondary{background:#25355f;color:#cfe3ff}
-    button:disabled{opacity:.6;cursor:not-allowed}
-    .wrap{display:grid;grid-template-columns: 1fr 360px; gap:10px; padding:10px; height: calc(100vh - 100px);}
-    #editor{width:100%;height:100%;border:1px solid #1f2b4a;border-radius:12px;overflow:hidden}
-    .side{display:flex;flex-direction:column;gap:10px;height:100%}
-    .card{background:var(--panel);border:1px solid #1f2b4a;border-radius:12px;padding:12px}
-    .muted{color:var(--muted);font-size:.9rem}
-    #log{height:220px;background:#0f1730;border:1px solid #2a375a;border-radius:10px;padding:10px;overflow:auto;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-    code.inline{background:#16234b;border:1px solid #2a375a;padding:1px 6px;border-radius:6px}
-    a{color:#9ecbff}
-    .row{display:flex;gap:8px;align-items:center}
-    .ok{color:var(--ok)} .err{color:var(--err)}
+    :root {
+      --bg: #0b1020;
+      --panel: #121a30;
+      --muted: #93a1c0;
+      --accent: #4fa3ff;
+      --ok: #1fbf75;
+      --err: #ff6161;
+    }
+
+    * {
+      box-sizing: border-box
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: #eaf0ff;
+      font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, Arial
+    }
+
+    header {
+      padding: 12px 16px;
+      border-bottom: 1px solid #1f2b4a;
+      background: #0e1630
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 16px
+    }
+
+    .bar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      padding: 10px 16px;
+      background: #0f1730;
+      border-bottom: 1px solid #1f2b4a
+    }
+
+    input[type="text"] {
+      background: #0f1730;
+      border: 1px solid #2a375a;
+      border-radius: 10px;
+      color: #eaf0ff;
+      padding: 8px 10px;
+      min-width: 0
+    }
+
+    .grow {
+      flex: 1 1 220px
+    }
+
+    button {
+      background: var(--accent);
+      border: none;
+      border-radius: 10px;
+      color: #fff;
+      font-weight: 700;
+      padding: 9px 14px;
+      cursor: pointer
+    }
+
+    button.secondary {
+      background: #25355f;
+      color: #cfe3ff
+    }
+
+    button:disabled {
+      opacity: .6;
+      cursor: not-allowed
+    }
+
+    .wrap {
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      gap: 10px;
+      padding: 10px;
+      height: calc(100vh - 100px);
+    }
+
+    #editor {
+      width: 100%;
+      height: 100%;
+      border: 1px solid #1f2b4a;
+      border-radius: 12px;
+      overflow: hidden
+    }
+
+    .side {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      height: 100%
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid #1f2b4a;
+      border-radius: 12px;
+      padding: 12px
+    }
+
+    .muted {
+      color: var(--muted);
+      font-size: .9rem
+    }
+
+    #log {
+      height: 220px;
+      background: #0f1730;
+      border: 1px solid #2a375a;
+      border-radius: 10px;
+      padding: 10px;
+      overflow: auto;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace
+    }
+
+    code.inline {
+      background: #16234b;
+      border: 1px solid #2a375a;
+      padding: 1px 6px;
+      border-radius: 6px
+    }
+
+    a {
+      color: #9ecbff
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+      align-items: center
+    }
+
+    .ok {
+      color: var(--ok)
+    }
+
+    .err {
+      color: var(--err)
+    }
   </style>
-  <script>window.MONACO_BASE="https://cdn.jsdelivr.net/npm/monaco-editor@0.47.0/min";</script>
+  <script>window.MONACO_BASE = "https://cdn.jsdelivr.net/npm/monaco-editor@0.47.0/min";</script>
   <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.47.0/min/vs/loader.js"></script>
 </head>
+
 <body>
-  <header><h1>Éditeur TypeScript → Enregistrer & Exécuter dans un Worker</h1></header>
+  <header>
+    <h1>Éditeur TypeScript → Enregistrer & Exécuter dans un Worker</h1>
+  </header>
 
   <div class="bar">
     <span class="muted">Chemin de sortie</span>
-    <input id="folder" class="grow" type="text" value="scripts" placeholder="dossier (ex: scripts)"/>
-    <input id="fname" class="grow" type="text" value="worker.ts" placeholder="fichier (ex: worker.ts)"/>
+    <input id="folder" class="grow" type="text" value="scripts" placeholder="dossier (ex: scripts)" />
+    <input id="fname" class="grow" type="text" value="worker.ts" placeholder="fichier (ex: worker.ts)" />
     <button id="saveRun">Enregistrer & Exécuter (Ctrl/Cmd+S)</button>
     <button id="stop" class="secondary">Stop</button>
   </div>
@@ -57,7 +184,7 @@
         <div class="muted">Log Worker</div>
         <div id="log"></div>
         <div class="row" style="margin-top:8px">
-          <input id="msg" class="grow" type="text" placeholder="message à envoyer au worker…"/>
+          <input id="msg" class="grow" type="text" placeholder="message à envoyer au worker…" />
           <button id="send" class="secondary">Envoyer</button>
         </div>
         <div id="status" class="muted" style="margin-top:6px"></div>
@@ -74,48 +201,48 @@
   </div>
 
   <script>
-    const $ = (s)=>document.querySelector(s);
+    const $ = (s) => document.querySelector(s);
     const folderEl = $('#folder');
-    const fnameEl  = $('#fname');
-    const saveRun  = $('#saveRun');
-    const stopBtn  = $('#stop');
-    const formatBtn= $('#format');
-    const logEl    = $('#log');
+    const fnameEl = $('#fname');
+    const saveRun = $('#saveRun');
+    const stopBtn = $('#stop');
+    const formatBtn = $('#format');
+    const logEl = $('#log');
     const statusEl = $('#status');
-    const msgEl    = $('#msg');
-    const sendBtn  = $('#send');
+    const msgEl = $('#msg');
+    const sendBtn = $('#send');
     const workerUrlEl = $('#workerUrl');
 
     let editor, model, worker = null;
 
-    function log(line, cls){
+    function log(line, cls) {
       const el = document.createElement('div');
-      if(cls) el.className = cls;
+      if (cls) el.className = cls;
       el.textContent = line;
       logEl.appendChild(el);
       logEl.scrollTop = logEl.scrollHeight;
     }
-    function setStatus(txt, cls){
+    function setStatus(txt, cls) {
       statusEl.className = cls ? cls + ' muted' : 'muted';
       statusEl.textContent = txt;
     }
-    function sanitizeSegment(s){
-      return (s||'').replace(/^\/+|\/+$/g,'').replace(/[^a-zA-Z0-9._\-\/]/g,'_');
+    function sanitizeSegment(s) {
+      return (s || '').replace(/^\/+|\/+$/g, '').replace(/[^a-zA-Z0-9._\-\/]/g, '_');
     }
-    function ensureTs(name){
+    function ensureTs(name) {
       return /\.ts$/i.test(name) ? name : (name + '.ts');
     }
-    function jsFromTs(pathTs){
+    function jsFromTs(pathTs) {
       return pathTs.replace(/\.ts$/i, '.js');
     }
-    function currentPaths(){
+    function currentPaths() {
       const folder = sanitizeSegment(folderEl.value || 'scripts');
-      const fname  = ensureTs(sanitizeSegment(fnameEl.value || 'worker.ts'));
+      const fname = ensureTs(sanitizeSegment(fnameEl.value || 'worker.ts'));
       const tsUrlRel = `/${folder}/${fname}`;
       const jsUrlRel = jsFromTs(tsUrlRel);
       return { folder, fname, tsUrlRel, jsUrlRel };
     }
-    function updateWorkerUrlPreview(){
+    function updateWorkerUrlPreview() {
       const { jsUrlRel } = currentPaths();
       workerUrlEl.innerHTML = `<code class="inline">${jsUrlRel}</code>`;
     }
@@ -123,7 +250,7 @@
     fnameEl.addEventListener('input', () => { updateWorkerUrlPreview(); updateModelUri(); });
 
     // --- Monaco init with file:// URI and eager sync ---
-    window.require.config({ paths: { 'vs': window.MONACO_BASE + '/vs' }});
+    window.require.config({ paths: { 'vs': window.MONACO_BASE + '/vs' } });
     window.require(['vs/editor/editor.main'], () => {
       monaco.languages.typescript.typescriptDefaults.setEagerModelSync(true);
       monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
@@ -169,7 +296,7 @@ setInterval(() => self.postMessage({ tick: ++n, at: Date.now() }), 1000);
       updateWorkerUrlPreview();
     });
 
-    function updateModelUri(){
+    function updateModelUri() {
       if (!window.monaco || !model) return;
       const { tsUrlRel } = currentPaths();
       const newUri = monaco.Uri.parse('file://' + tsUrlRel);
@@ -187,14 +314,20 @@ setInterval(() => self.postMessage({ tick: ++n, at: Date.now() }), 1000);
       if (folder.includes('..') || fname.includes('..')) throw new Error("Chemin invalide ('..')");
       const apiUrl = `/api/file/${encodeURIComponent(folder)}/${encodeURIComponent(fname)}`;
       const src = editor.getValue();
-
+      const rep = await fetch("/api/get-config", { method: 'POST' })
+      const value = await rep.json()
+      await fetch("/api/current-directory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: value.code })
+      })
       const resp = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/typescript; charset=utf-8' },
         body: new TextEncoder().encode(src)
       });
 
-      const json = await resp.json().catch(()=> ({}));
+      const json = await resp.json().catch(() => ({}));
       if (!resp.ok || !json.ok) throw new Error(json.message || `Erreur HTTP ${resp.status}`);
       return { tsUrlRel };
     }
@@ -234,16 +367,17 @@ setInterval(() => self.postMessage({ tick: ++n, at: Date.now() }), 1000);
 
     $('#saveRun').addEventListener('click', saveAndRun);
     $('#format').addEventListener('click', () => editor && editor.getAction('editor.action.formatDocument').run());
-    $('#stop').addEventListener('click', () => { if (worker) { worker.terminate(); worker = null; setStatus('Worker stoppé'); log('⏹️ Worker stoppé'); }});
-    $('#send').addEventListener('click', () => { if(worker){ worker.postMessage($('#msg').value); log(`→ ${$('#msg').value}`); $('#msg').value=''; } });
+    $('#stop').addEventListener('click', () => { if (worker) { worker.terminate(); worker = null; setStatus('Worker stoppé'); log('⏹️ Worker stoppé'); } });
+    $('#send').addEventListener('click', () => { if (worker) { worker.postMessage($('#msg').value); log(`→ ${$('#msg').value}`); $('#msg').value = ''; } });
 
     // Ctrl/Cmd+S = save & run
-    window.addEventListener('keydown', (e)=>{
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase()==='s') {
+    window.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
         saveAndRun();
       }
     });
   </script>
 </body>
+
 </html>

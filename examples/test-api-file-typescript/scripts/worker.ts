@@ -1,14 +1,17 @@
 /* Exemple Worker TypeScript */
-
+declare const self: DedicatedWorkerGlobalScope;
 export {};
 
 function log(...args:any[]) {
   self.postMessage({ type:'log', data: args.map(x => typeof x==='object' ? JSON.stringify(x) : String(x)) });
 }
 
-function f(x) {
-  return (-9.81/(2*21*21))*x*x+3.5
+log("👋 Worker TS démarré", new Date().toISOString());
 
-}
+self.onmessage = (e: MessageEvent) => {
+  log("Message reçu:", e.data);
+  if (e.data === "ping") self.postMessage("pong");
+};
 
-log("👋 Worker TS démarré", f(1));
+let n = 0;
+setInterval(() => self.postMessage({ tick: ++n, at: Date.now() }), 1000);

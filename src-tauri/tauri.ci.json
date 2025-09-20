@@ -1,0 +1,11 @@
+{
+  "tauri": {
+    "bundle": {
+      "windows": {
+        "certificateThumbprint": "${WINDOWS_CERTIFICATE_THUMBPRINT}",
+        "digestAlgorithm": "sha256",
+        "timestampUrl": "http://timestamp.digicert.com"
+      }
+    }
+  }
+}
