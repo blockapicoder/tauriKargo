@@ -2,9 +2,9 @@
   "tauri": {
     "bundle": {
       "windows": {
-        "certificateThumbprint": "${WINDOWS_CERTIFICATE_THUMBPRINT}",
         "digestAlgorithm": "sha256",
-        "timestampUrl": "http://timestamp.digicert.com"
+        "timestampUrl": "http://timestamp.digicert.com",
+        "signCommand": "powershell -NoProfile -Command \"& 'signtool.exe' sign /fd sha256 /f $env:TAURI_WIN_CERT_PATH /p $env:TAURI_WIN_CERT_PASS /tr http://timestamp.digicert.com /td sha256 $path\""
       }
     }
   }
