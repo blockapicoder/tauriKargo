@@ -1,0 +1,82 @@
+name: Sign Windows EXE (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run ID contenant l'artefact 'unsigned-exe' (laisser vide pour le dernier sur main)"
+        required: false
+        default: ""
+      artifact_name:
+        description: "Nom de l'artefact à signer"
+        required: true
+        default: "unsigned-exe"
+
+permissions:
+  contents: read
+
+jobs:
+  sign:
+    runs-on: windows-latest
+    steps:
+      - name: Download unsigned artifact
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow_conclusion: success
+          name: ${{ inputs.artifact_name }}
+          if_no_artifact_found: fail
+          # Si run_id donné, on le cible. Sinon on prend le dernier sur main.
+          run_id: ${{ inputs.run_id }}
+          branch: ${{ inputs.run_id == '' && 'main' || '' }}
+
+      - name: Check secrets
+        shell: pwsh
+        run: |
+          if (-not "${{ secrets.WINDOWS_CERTIFICATE }}" -or -not "${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}") {
+            Write-Error "Secrets manquants: WINDOWS_CERTIFICATE / WINDOWS_CERTIFICATE_PASSWORD"
+          }
+
+      - name: Decode PFX
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+        run: |
+          New-Item -ItemType Directory -Force certificate | Out-Null
+          Set-Content certificate\cert.b64 $env:WINDOWS_CERTIFICATE
+          certutil -decode certificate\cert.b64 certificate\codesign.pfx | Out-Null
+
+      - name: Find EXE to sign
+        id: findexe
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path . -Filter TauriKargo*.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { Write-Error "Aucun exe trouvé dans l'artefact téléchargé." }
+          Write-Host "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Sign EXE
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $exe = "${{ steps.findexe.outputs.exe }}"
+          & signtool.exe sign `
+            /fd sha256 `
+            /f certificate\codesign.pfx `
+            /p "$env:WINDOWS_CERTIFICATE_PASSWORD" `
+            /tr http://timestamp.digicert.com `
+            /td sha256 `
+            /d "TauriKargo" `
+            "$exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify signature
+        shell: pwsh
+        run: |
+          $exe = "${{ steps.findexe.outputs.exe }}"
+          Get-AuthenticodeSignature "$exe" | Format-List Status,StatusMessage,SignerCertificate
+
+      - name: Upload signed exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-exe
+          path: ${{ steps.findexe.outputs.exe }}
