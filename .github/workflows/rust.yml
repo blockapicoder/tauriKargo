@@ -1,24 +1,17 @@
 name: Build Windows EXE (signed in CI)
 
 on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
+  push: { branches: ["main"] }
+  pull_request: { branches: ["main"] }
 
-permissions:
-  contents: write
+permissions: { contents: write }
 
 jobs:
   build-windows-exe:
     runs-on: windows-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked --version ^1.6
 
@@ -34,25 +27,25 @@ jobs:
       - name: Generate icons
         run: cargo tauri icon src-tauri/icon.png
 
-      # Prépare le PFX (base64) et exporte 2 variables d'env pour signCommand (si secrets fournis)
+      # Prépare signature (optionnelle)
       - name: Prepare code signing (optional)
         shell: pwsh
         env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}              # .pfx en base64
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
-          if (-not $env:WINDOWS_CERTIFICATE -or -not $env:WINDOWS_CERTIFICATE_PASSWORD) {
-            "TAURI_WIN_CERT_PATH=" | Out-File -FilePath $env:GITHUB_ENV -Append
-            "TAURI_WIN_CERT_PASS=" | Out-File -FilePath $env:GITHUB_ENV -Append
-            exit 0
+          if ($env:WINDOWS_CERTIFICATE -and $env:WINDOWS_CERTIFICATE_PASSWORD) {
+            New-Item -ItemType Directory -Force certificate | Out-Null
+            Set-Content certificate\cert.b64 $env:WINDOWS_CERTIFICATE
+            certutil -decode certificate\cert.b64 certificate\codesign.pfx | Out-Null
+            "TAURI_WIN_CERT_PATH=$(Resolve-Path certificate\codesign.pfx)" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "TAURI_WIN_CERT_PASS=$($env:WINDOWS_CERTIFICATE_PASSWORD)" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "GH_ARGS=--bundles app --config src-tauri/tauri.ci.json" | Out-File -FilePath $env:GITHUB_ENV -Append
+          } else {
+            "GH_ARGS=--bundles app" | Out-File -FilePath $env:GITHUB_ENV -Append
           }
-          New-Item -ItemType Directory -Force certificate | Out-Null
-          Set-Content certificate\cert.b64 $env:WINDOWS_CERTIFICATE
-          certutil -decode certificate\cert.b64 certificate\codesign.pfx | Out-Null
-          "TAURI_WIN_CERT_PATH=$(Resolve-Path certificate\codesign.pfx)" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "TAURI_WIN_CERT_PASS=$($env:WINDOWS_CERTIFICATE_PASSWORD)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      # Build (et signature si TAURI_WIN_CERT_* présents)
+      # Build: EXE portable uniquement; signé si secrets présents
       - name: Build portable EXE
         uses: tauri-apps/tauri-action@v0
         env:
@@ -60,7 +53,7 @@ jobs:
           TAURI_WIN_CERT_PATH: ${{ env.TAURI_WIN_CERT_PATH }}
           TAURI_WIN_CERT_PASS: ${{ env.TAURI_WIN_CERT_PASS }}
         with:
-          args: --config src-tauri/tauri.ci.json
+          args: ${{ env.GH_ARGS }}
 
       - name: Upload artifacts (portable exe)
         uses: actions/upload-artifact@v4
