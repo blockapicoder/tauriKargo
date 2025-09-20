@@ -1,0 +1,338 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Explorateur (API /api/explorer + Monaco)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin:0; padding:16px; max-width:1100px; margin-inline:auto; }
+  header { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+  h1 { font-size:18px; margin:0 8px 0 0; }
+  input, button {
+    padding:10px 12px; border-radius:10px; border:1px solid rgba(127,127,127,.35);
+    background:inherit; color:inherit;
+  }
+  button { cursor:pointer; }
+  button:disabled { opacity:.6; cursor:not-allowed; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; width:100%; align-items:center; }
+  #path { flex:1 1 420px; min-width:280px; }
+  #filter { flex:1 1 220px; min-width:200px; }
+  .status { margin:8px 0 12px; opacity:.85; min-height:1.2em; }
+  .panel { border:1px solid rgba(127,127,127,.35); border-radius:12px; overflow:clip; }
+  table { width:100%; border-collapse:collapse; }
+  thead th { text-align:left; font-weight:600; background: rgba(127,127,127,.12); padding:10px 12px; position:sticky; top:0; }
+  tbody td { padding:8px 12px; border-top:1px solid rgba(127,127,127,.18); }
+  tbody tr:hover { background: rgba(127,127,127,.12); }
+  .name { display:flex; align-items:center; gap:10px; }
+  .path { font-family: ui-monospace, Menlo, Consolas, monospace; opacity:.85; }
+  .actions { display:flex; gap:6px; justify-content:flex-end; }
+  .empty { padding:16px; text-align:center; opacity:.75; }
+  .spinner { width:16px; height:16px; border-radius:50%; border:2px solid rgba(127,127,127,.35); border-top-color:transparent; display:inline-block; animation:spin 1s linear infinite; vertical-align:-3px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .error { color:#b00020; }
+  .base { font-size:12px; opacity:.75; margin-left:auto; }
+
+  /* Modal Monaco */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.35);
+    display: none; align-items: center; justify-content: center; padding: 20px; z-index: 50;
+  }
+  .header-modal { background: rgba(0,0,0); }
+  .modal {
+    width: min(100%, 1100px); height: min(100%, 720px);
+    background: inherit; color: inherit; border: 1px solid rgb(127,127,127);
+    border-radius: 14px; overflow: hidden; display: grid; grid-template-rows: auto 1fr auto;
+  }
+  .modal header {
+    display:flex; align-items:center; gap:10px; padding:10px 12px;
+    border-bottom: 1px solid rgb(127,127,127);
+  }
+  .modal .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .modal .toolbar { display:flex; gap:8px; margin-left:auto; }
+  .modal .toolbar button { border-radius: 10px; }
+  .modal .toolbar .save { background:#33d17a; color:#062312; border-color: transparent; font-weight:600; }
+  .modal .toolbar .cancel { background:#33d17a; }
+  #monaco { width:100%; height:100%; }
+</style>
+
+<header>
+  <h1>Explorateur</h1>
+  <div class="row" style="width:100%;">
+    <input id="path" type="text" placeholder="Chemin absolu ou relatif (ex: C:\, /, /home/user, D:\Projets)" />
+    <button id="go">Aller</button>
+    <button id="up">⬆️ Parent</button>
+    <input id="filter" type="text" placeholder="Filtrer (nom contient…)" />
+    <button id="refresh">↻</button>
+    <button id="clear">✕</button>
+    <div class="base">Base: <code id="baseLabel">—</code></div>
+  </div>
+</header>
+
+<div id="status" class="status"></div>
+
+<section class="panel">
+  <table>
+    <thead><tr><th>Nom</th><th>Chemin</th><th style="width:220px;">Actions</th></tr></thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  <div id="empty" class="empty" hidden>Aucun élément.</div>
+</section>
+
+<!-- Modal Monaco -->
+<div id="modalBackdrop" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="dlgTitle">
+  <div class="modal">
+    <header class="header-modal">
+      <div id="dlgTitle" class="title">Édition TypeScript</div>
+      <div class="toolbar">
+        <button id="btnCancel" class="cancel">Annuler</button>
+        <button id="btnSave" class="save">Enregistrer</button>
+      </div>
+    </header>
+    <div id="monaco"></div>
+    <div style="padding:8px 12px; border-top:1px solid rgba(127,127,127,.25); opacity:.75;">
+      Lecture/écriture via <code>/api/file/&lt;name&gt;</code> après définition de <code>/api/current-directory</code> = <em>parent</em>.
+    </div>
+  </div>
+</div>
+
+<!-- Chargeur AMD de Monaco Editor -->
+<script>
+  (function() {
+    const base = "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min";
+    const s = document.createElement('script');
+    s.src = base + "/vs/loader.js";
+    s.onload = () => {
+      window.require.config({ paths: { 'vs': base + '/vs' } });
+    };
+    document.head.appendChild(s);
+  })();
+</script>
+
+<script type="module">
+const API_EXPLORER = "/api/explorer";
+const API_CURDIR   = "/api/current-directory";
+const API_FILE     = (rel) => "/api/file/" + encodeURIComponent(rel);
+
+const $ = s => document.querySelector(s);
+const tbody = $("#tbody"), status = $("#status"), emptyMsg = $("#empty");
+const pathInput = $("#path"), filterInput = $("#filter"), baseLabel = $("#baseLabel");
+
+let current = { type:"directory", path:"", parent:null, content: [] };
+let currentBase = "";       // renvoyé par /api/current-directory
+let editor = null;
+let openedRelName = "";     // <name> pour /api/file/<name>
+
+function setBusy(b, msg="") {
+  $("#go").disabled = b; $("#up").disabled = b; $("#refresh").disabled = b; $("#clear").disabled = b;
+  const spin = b ? ' <span class="spinner"></span>' : '';
+  status.innerHTML = msg ? `${msg}${spin}` : (b ? `Chargement…${spin}` : "");
+}
+function escapeHtml(s=""){return s.replace(/[&<>"']/g,c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]))}
+const isTS = p => /\.ts$/i.test(p||"");
+
+/* ---------- API ---------- */
+async function setCurrentDirectory(pathStr){
+  const res = await fetch(API_CURDIR, {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ path: pathStr||"" })
+  });
+  const j = await res.json();
+  if (!res.ok || !j.ok) throw new Error(j.message || "Erreur current-directory");
+  currentBase = j.current || "";
+  baseLabel.textContent = currentBase || "—";
+  return currentBase;
+}
+async function explore(pathStr){
+  setBusy(true, `Lecture de <code>${escapeHtml(pathStr||"/")}</code>…`);
+  try{
+    const res = await fetch(API_EXPLORER, {
+      method: "POST",
+      headers: {"Content-Type":"application/json","Cache-Control":"no-cache"},
+      body: JSON.stringify({ path: pathStr||"" })
+    });
+    const json = await res.json();
+    if(!res.ok || json.type==="error") throw new Error(json.message || res.statusText);
+
+    // Si c'est un fichier → workflow simple demandé
+    if (json.type === "file") {
+      // 1) placer la base sur le parent
+      await setCurrentDirectory(json.parent || "");
+      // 2) si c'est un .ts, ouvrir l'éditeur avec name (relatif à current-directory)
+      if (isTS(json.name)) {
+        await openEditorForRel(json.name, json.path);
+      } else {
+        status.textContent = "Ce fichier n'est pas un TypeScript (.ts)";
+      }
+      // On met tout de même à jour l'état courant pour l'afficher dans le tableau
+      current = json;
+      pathInput.value = json.path || pathStr || "";
+      render();
+      setBusy(false, `OK`);
+      return;
+    }
+
+    // Sinon dossier → rendu normal
+    current = json;
+    pathInput.value = current.path || pathStr || "";
+    render();
+    setBusy(false, `OK`);
+  }catch(e){
+    setBusy(false);
+    status.innerHTML = `<span class="error">❌ ${escapeHtml(e.message||String(e))}</span>`;
+    current = { type:"directory", path:pathStr||"", parent:null, content: [] };
+    render();
+  }
+}
+async function readFile(relName){
+  const res = await fetch(API_FILE(relName), { method:"POST" }); // body vide => lecture
+  if (!res.ok) throw new Error(await res.text().catch(()=>`Erreur lecture ${relName}`));
+  return await res.text();
+}
+async function writeFile(relName, content){
+  const res = await fetch(API_FILE(relName), {
+    method:"POST",
+    headers:{ "Content-Type":"text/plain; charset=utf-8" },
+    body: content
+  });
+  if (!res.ok) throw new Error(await res.text().catch(()=>`Erreur écriture ${relName}`));
+  return await res.json().catch(()=>({ ok:true }));
+}
+
+/* ---------- Monaco ---------- */
+function showModal(show){ $("#modalBackdrop").style.display = show ? "flex" : "none"; }
+function ensureMonaco(){
+  return new Promise((resolve, reject) => {
+    if (window.monaco && window.monaco.editor) return resolve(window.monaco);
+    if (!window.require) return reject(new Error("Chargeur Monaco non initialisé."));
+    window.require(['vs/editor/editor.main'], () => resolve(window.monaco), reject);
+  });
+}
+async function openEditorForRel(relName, displayPath){
+  try {
+    const monaco = await ensureMonaco();
+    showModal(true);
+    openedRelName = relName;
+
+    if (!editor) {
+      editor = monaco.editor.create($("#monaco"), {
+        value: "",
+        language: "typescript",
+        theme: "vs-dark",
+        automaticLayout: true,
+        fontSize: 13,
+        minimap: { enabled: true }
+      });
+    }
+
+    const content = await readFile(relName);
+    const title = displayPath ? displayPath : relName;
+    $("#dlgTitle").textContent = `Édition TypeScript — ${title}`;
+    // modèle anonyme suffisant (URI non indispensable maintenant qu'on n'emploie que <name>)
+    const model = editor.getModel() || monaco.editor.createModel(content, "typescript");
+    if (model.getValue() !== content) model.setValue(content);
+    editor.setModel(model);
+  } catch (e) {
+    showModal(false);
+    status.innerHTML = `<span class="error">❌ ${escapeHtml(e.message||String(e))}</span>`;
+  }
+}
+function closeEditorDialog(){ showModal(false); }
+
+/* ---------- Rendu tableau ---------- */
+function render(){
+  const filter = (filterInput.value||"").toLowerCase().trim();
+  tbody.replaceChildren();
+
+  if(current.type === "file"){
+    emptyMsg.hidden = true;
+    const tr = document.createElement("tr");
+    const isTsFile = isTS(current.path);
+    tr.innerHTML = `
+      <td class="name"><span>${isTsFile?'🟦':'📄'}</span> <strong>${escapeHtml(current.path.split(/[\\/]/).pop()||current.path)}</strong></td>
+      <td class="path">${escapeHtml(current.path||"")}</td>
+      <td class="actions">
+        <button data-act="copy">Copier</button>
+        <button data-act="parent">Ouvrir dossier</button>
+        ${isTsFile?'<button data-act="edit">Éditer (.ts)</button>':''}
+      </td>`;
+    tr.querySelector('[data-act="copy"]').addEventListener("click", async()=>{ await navigator.clipboard.writeText(current.path||""); status.textContent = "Chemin copié"; });
+    tr.querySelector('[data-act="parent"]').addEventListener("click", ()=>{ if(current.parent) explore(current.parent); });
+    if (isTsFile) tr.querySelector('[data-act="edit"]').addEventListener("click", async ()=>{
+      // Rejoue le workflow simple (définit base=parent, puis lit par name)
+      await setCurrentDirectory(current.parent || "");
+      await openEditorForRel(current.name, current.path);
+    });
+    tbody.append(tr);
+    return;
+  }
+
+  const items = (current.content||[]).filter(it=>!filter || it.name.toLowerCase().includes(filter));
+  emptyMsg.hidden = items.length>0;
+
+  for(const it of items){
+    const isTsFile = isTS(it.path);
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="name"><span>${isTsFile?'🟦':'📁'}</span> <a href="#" class="open">${escapeHtml(it.name)}</a></td>
+      <td class="path">${escapeHtml(it.path)}</td>
+      <td class="actions">
+        <button data-act="open">Ouvrir</button>
+        <button data-act="copy">Copier</button>
+        ${isTsFile?'<button data-act="edit">Éditer (.ts)</button>':''}
+      </td>`;
+    tr.querySelector(".open").addEventListener("click", (e)=>{ e.preventDefault(); explore(it.path); });
+    tr.querySelector('[data-act="open"]').addEventListener("click", ()=> explore(it.path));
+    tr.querySelector('[data-act="copy"]').addEventListener("click", async()=>{ await navigator.clipboard.writeText(it.path); status.textContent = "Chemin copié"; });
+    if (isTsFile) {
+      tr.querySelector('[data-act="edit"]').addEventListener("click", async ()=>{
+        // On demande directement l’exploration de l’élément (qui fera setCurrentDirectory + lecture)
+        await explore(it.path);
+      });
+    }
+    tbody.append(tr);
+  }
+}
+
+/* ---------- Actions top bar ---------- */
+$("#go").addEventListener("click", async ()=>{
+  const p = pathInput.value.trim();
+  try {
+    await setCurrentDirectory(p);  // base pour /api/file/*
+    await explore(p);
+    status.textContent = `Base définie : ${currentBase}`;
+  } catch(e){
+    status.innerHTML = `<span class="error">❌ ${escapeHtml(e.message||String(e))}</span>`;
+  }
+});
+$("#refresh").addEventListener("click", ()=> explore(pathInput.value.trim()));
+$("#clear").addEventListener("click", ()=> { filterInput.value=""; render(); });
+$("#up").addEventListener("click", ()=>{ if(current.parent) explore(current.parent); });
+pathInput.addEventListener("keydown",(e)=>{ if(e.key==="Enter") $("#go").click(); });
+filterInput.addEventListener("input", render);
+
+/* ---------- Boutons modal ---------- */
+$("#btnCancel").addEventListener("click", ()=> closeEditorDialog());
+$("#btnSave").addEventListener("click", async ()=>{
+  if (!editor || !openedRelName) return;
+  try {
+    const content = editor.getValue();
+    await writeFile(openedRelName, content);
+    status.textContent = `✅ Enregistré : ${openedRelName}`;
+    closeEditorDialog();
+  } catch(e){
+    status.innerHTML = `<span class="error">❌ ${escapeHtml(e.message||String(e))}</span>`;
+  }
+});
+
+/* ---------- Init ---------- */
+(async () => {
+  try {
+    await setCurrentDirectory("");           // base = CWD serveur
+    status.textContent = `Base initiale : ${currentBase || "(CWD serveur)"}`;
+  } catch (e) {
+    status.innerHTML = `<span class="error">ℹ️ /api/current-directory indisponible : ${escapeHtml(e.message||String(e))}</span>`;
+  }
+  await explore("");                         // démarrage
+})();
+</script>

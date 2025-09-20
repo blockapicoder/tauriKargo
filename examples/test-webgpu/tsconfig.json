@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "strict": true,
+    "noEmit": true,
+    "lib": ["ES2022", "DOM"],
+    "types": [
+        "@webgpu/types"
+    ],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["."]
+}

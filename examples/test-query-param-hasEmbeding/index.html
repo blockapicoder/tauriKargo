@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Etat Embeding</title>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body { display: grid; place-items: center; font: 16px/1.5 system-ui, sans-serif; }
+    .card { padding: 2rem 2.5rem; border: 1px solid #ddd; border-radius: 12px; }
+    .ok { font-weight: 700; }
+    .ko { font-weight: 700; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div id="msg" class="ko">pas d'embeding</div>
+  </div>
+
+  <script>
+    (function () {
+      const qp = new URLSearchParams(window.location.search);
+      const raw = qp.get('hasEmbeding');
+      const has = String(raw).toLowerCase() === 'true';
+
+      const el = document.getElementById('msg');
+      if (has) {
+        el.textContent = 'emebding detecter';
+        el.className = 'ok';
+      } else {
+        el.textContent = "pas d'embeding";
+        el.className = 'ko';
+      }
+    })();
+  </script>
+</body>
+</html>

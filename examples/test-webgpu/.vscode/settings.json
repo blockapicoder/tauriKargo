@@ -1,0 +1,11 @@
+{
+    "terminal.integrated.env.windows": {
+        "PATH": "D:\\Outilsdev\\node\\node-v22.14.0-win-x64;${env:PATH}"
+    },
+    "terminal.integrated.env.linux": {
+        "PATH": "/usr/local/bin/node;${env:PATH}"
+    },
+    "terminal.integrated.env.osx": {
+        "PATH": "/usr/local/bin/node;${env:PATH}"
+    }
+}

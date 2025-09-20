@@ -1,0 +1,509 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Code / Executable / Output – Sélecteurs avec dialogue</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; max-width: 1100px; margin: 28px auto; padding: 0 16px; }
+  h1 { font-size: 22px; margin: 0 0 10px; }
+  h2 { font-size: 18px; margin: 18px 0 8px; }
+  .panel { border: 1px solid rgba(128,128,128,.28); border-radius: 12px; padding: 12px; }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; width: 100%; }
+  label { width: 110px; font-weight: 600; }
+  button { padding: 9px 14px; border-radius: 10px; border: 1px solid rgba(128,128,128,.35); cursor: pointer; }
+  .muted { opacity: .8; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid rgba(128,128,128,.3); border-radius: 999px; font-size: 12px; }
+  .chip code, .path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .actions { display: flex; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
+  pre#log { background: rgba(128,128,128,.1); padding: 10px; border-radius: 10px; white-space: pre-wrap; margin-top: 14px; }
+
+  /* Dialog */
+  dialog { border: none; border-radius: 12px; width: min(920px, 96vw); padding: 0; overflow-x: hidden; }
+  dialog::backdrop { background: rgba(0,0,0,.35); }
+  .dlg { padding: 14px; overflow-x: hidden; }
+  .hdr { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  #dlgPath { flex: 1 1 100%; min-width: 0; width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(128,128,128,.35); }
+
+  #dlgGrid { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 10px; width: 100%; overflow-x: hidden; }
+  #dlgGrid.two { grid-template-columns: 1.1fr .9fr; }
+  #dlgGrid > .box { min-width: 0; }
+
+  .list { list-style: none; padding: 0; margin: 0; border: 1px solid rgba(128,128,128,.22); border-radius: 10px; max-height: 380px; overflow-y: auto; overflow-x: hidden; width: 100%; }
+  .list li { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-bottom: 1px solid rgba(128,128,128,.12); cursor: default; min-width: 0; }
+  .list li:last-child { border-bottom: 0; }
+  .list li.folder { cursor: pointer; }
+  .list li:hover { background: rgba(128,128,128,.1); }
+  .list li .path { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; word-break: break-word; white-space: normal; }
+
+  .icon { width: 1.2em; flex: 0 0 auto; }
+  .box { border: 1px solid rgba(128,128,128,.22); border-radius: 10px; padding: 10px; width: 100%; overflow-x: hidden; }
+  .dlg-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 12px; }
+  .small { font-size: 12px; }
+</style>
+
+<h1>Sélection des répertoires</h1>
+
+<section class="panel">
+  <h2 style="margin-top:0;">Zone 1 — Code (multi-sélection de projets)</h2>
+  <div class="row">
+    <label>Base code</label>
+    <span id="exploredBase" class="path muted" style="flex:1 1 auto;">(aucun)</span>
+    <button id="codePick">Explorer…</button>
+  </div>
+  <div class="muted small" style="margin-top:8px;">Projets sélectionnés (sous-dossiers contenant <code>index.html</code>, <code>index.ts</code> ou <code>index.js</code>) :</div>
+  <div id="codeSelected" class="chips"></div>
+</section>
+
+<section class="panel">
+  <h2 style="margin-top:0;">Zone 2 — Executable</h2>
+  <div class="row">
+    <label>Executable</label>
+    <span id="execShow" class="path muted" style="flex:1 1 auto;">(aucun)</span>
+    <button id="execPick">Explorer…</button>
+  </div>
+</section>
+
+<section class="panel">
+  <h2 style="margin-top:0;">Zone 3 — Output</h2>
+  <div class="row">
+    <label>Output</label>
+    <span id="outShow" class="path muted" style="flex:1 1 auto;">(aucun)</span>
+    <button id="outPick">Explorer…</button>
+  </div>
+</section>
+
+<div class="actions">
+  <button id="addBtn">Ajouter configs</button>
+  <button id="cancelBtn">Annuler</button>
+</div>
+
+<pre id="log"></pre>
+
+<!-- ================== DIALOG ================== -->
+<dialog id="dirDialog">
+  <div class="dlg">
+    <div class="hdr">
+      <h3 id="dlgTitle" style="margin:0;">Explorer les dossiers</h3>
+      <button id="dlgClose">Fermer</button>
+    </div>
+
+    <div class="row" style="margin-top:6px;">
+      <input id="dlgPath" type="text" placeholder="Chemin…" />
+    </div>
+
+    <div id="dlgGrid">
+      <div class="box">
+        <ul id="dlgEntries" class="list" aria-label="Entrées du dossier"></ul>
+      </div>
+
+      <div class="box" id="dlgProjectsBox" style="display:none;">
+        <div class="small muted" style="margin-bottom:6px;">Sous-dossiers avec <code>index.html</code>/<code>index.ts</code>/<code>index.js</code> (sélection multiple)</div>
+        <ul id="dlgProjects" class="list"></ul>
+      </div>
+    </div>
+
+    <div class="dlg-actions">
+      <span id="dlgHint" class="small muted" style="margin-right:auto;"></span>
+      <button id="dlgValidate">Valider</button>
+    </div>
+  </div>
+</dialog>
+
+<script type="module">
+  const $ = (s) => document.querySelector(s);
+  const log = (m) => { $('#log').textContent = m || ''; };
+
+  /* ---------- Helpers chemins (robustes) ---------- */
+  function stripWinPrefix(p) {
+    const s = String(p || '');
+    if (s.startsWith('\\\\?\\UNC\\')) return '\\\\' + s.slice(8);
+    if (s.startsWith('\\\\?\\')) return s.slice(4);
+    return s;
+  }
+  const looksWin = (p) => /[\\]|^[A-Za-z]:/.test(String(p||''));
+  const joinPath = (a,b) => {
+    if(!a) return stripWinPrefix(b||''); if(!b) return stripWinPrefix(a||'');
+    const A = stripWinPrefix(a), B = stripWinPrefix(b);
+    const sep = looksWin(A)? '\\' : '/';
+    return A.replace(/[\\/]+$/,'') + sep + String(B).replace(/^[\\/]+/,'');
+  };
+  const basename = (p) => { const s=stripWinPrefix(p||''); const parts=s.split(/[\\/]+/).filter(Boolean); return parts[parts.length-1]||''; };
+
+  const toSlash = (p) => stripWinPrefix(p||'').replace(/\\/g,'/');
+  const norm = (p) => toSlash(p).replace(/\/+$/,'');
+  function eqPath(a,b){
+    const A = norm(a), B = norm(b);
+    return looksWin(a||b) ? A.toLowerCase() === B.toLowerCase() : A === B;
+  }
+  function insideOrSame(child, base){
+    if(!child || !base) return false;
+    const C = norm(child), B = norm(base);
+    if(!B) return false;
+    if (looksWin(base)) {
+      const c = C.toLowerCase(), b = B.toLowerCase();
+      return c === b || c.startsWith(b + '/');
+    } else {
+      return C === B || C.startsWith(B + '/');
+    }
+  }
+  function relFrom(child, base){
+    if(!child) return '';
+    if(!base) return stripWinPrefix(child);
+    if(!insideOrSame(child, base)) return stripWinPrefix(child);
+    const C = norm(child), B = norm(base);
+    if (eqPath(C, B)) return '.';
+    const rel = C.slice(B.length + 1);
+    return looksWin(base) ? rel.replace(/\//g,'\\') : rel;
+  }
+  function sanitizeCodeBase(base) {
+    const n = norm(base || '');
+    const low = n.toLowerCase();
+    if (low.endsWith('/taurikargo/code')) return n.slice(0, n.length - '/taurikargo/code'.length);
+    if (low.endsWith('/taurikargo'))      return n.slice(0, n.length - '/taurikargo'.length);
+    return n;
+  }
+
+  /* ---------- API ---------- */
+  async function apiExplorer(path){
+    const r = await fetch('/api/explorer', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({ path: path||'' })
+    });
+    const j = await r.json();
+    if(!r.ok) throw new Error(j?.message || r.statusText);
+    return j; // { type, path, parent?, content? }
+  }
+  async function loadConfigJson(){
+    try{
+      const r = await fetch('/api/file/config.json', {method:"POST" ,  cache:'no-cache' });
+      if(!r.ok) return { selected:null, configs:[] };
+      const j = await r.json();
+      if(Array.isArray(j?.configs)) return j;
+      if(j && (j.folder || j.output)){
+        return { selected:'config', configs:[{ name:'config', folder:stripWinPrefix(j.folder||''), output:stripWinPrefix(j.output||''), executable:stripWinPrefix(j.executable||'') }] };
+      }
+      return { selected:null, configs:[] };
+    }catch{ return { selected:null, configs:[] }; }
+  }
+  async function saveConfigJson(payload){
+    const cleaned = {
+      selected: payload.selected,
+      configs: (payload.configs||[]).map(c=>({
+        name: c.name,
+        folder: stripWinPrefix(c.folder||''),
+        executable: stripWinPrefix(c.executable||''),
+        output: stripWinPrefix(c.output||''),
+      }))
+    };
+    const r = await fetch('/api/file/config.json', {
+      method:'POST', headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify(cleaned)
+    });
+    const j = await r.json().catch(()=> ({}));
+    if(!r.ok || j.ok === false) throw new Error(j?.message || r.statusText || 'Échec écriture config.json');
+    return j;
+  }
+
+  /* ---------- DIALOG (explorateur) ---------- */
+  const dlg = $('#dirDialog');
+  const dlgState = {
+    mode: 'single', // 'single' | 'code'
+    current: null,
+    currentParent: null,
+    selections: new Set(),
+    onPick: null,
+    displayRel: false,
+    displayBase: null
+  };
+
+  function setDlgMode(mode){
+    dlgState.mode = mode;
+    $('#dlgProjectsBox').style.display = mode === 'code' ? '' : 'none';
+    $('#dlgTitle').textContent = (mode === 'code')
+      ? 'Sélectionner des projets (sous-dossiers avec index.html / index.ts / index.js)'
+      : 'Choisir un dossier';
+    $('#dlgHint').textContent = (mode === 'code')
+      ? 'Cochez un ou plusieurs sous-dossiers puis cliquez Valider.'
+      : 'Naviguez puis cliquez Valider pour choisir ce dossier.';
+    $('#dlgGrid').classList.toggle('two', mode === 'code');
+  }
+
+  function displayPathForDialog(absPath){
+    const abs = stripWinPrefix(absPath);
+    if(dlgState.displayRel && dlgState.displayBase){
+      const r = relFrom(abs, dlgState.displayBase);
+      return r || '.';
+    }
+    return abs;
+  }
+
+  async function openDir(path){
+    try{
+      const info = await apiExplorer(path);
+      if(info.type !== 'directory'){ log("Ce chemin n'est pas un dossier."); return; }
+
+      if(!dlgState.displayBase) dlgState.displayBase = stripWinPrefix(info.path);
+      dlgState.current = stripWinPrefix(info.path);
+      dlgState.currentParent = info.parent ? stripWinPrefix(info.parent) : null;
+
+      $('#dlgPath').value = displayPathForDialog(info.path);
+      await renderEntries(info);
+      if(dlgState.mode === 'code') await renderProjects(info);
+    }catch(e){ log('❌ '+(e.message||e)); }
+  }
+
+  async function renderEntries(dirInfo){
+    const ul = $('#dlgEntries'); ul.innerHTML = '';
+    if(dirInfo.type !== 'directory'){ ul.innerHTML = '<li class="muted small">(pas un dossier)</li>'; return; }
+
+    const up = document.createElement('li');
+    if(dirInfo.parent){
+      up.className = 'folder';
+      up.innerHTML = '<span class="icon">⬆</span><span class="path">..</span>';
+      up.title = displayPathForDialog(dirInfo.parent);
+      up.onclick = () => { openDir(dirInfo.parent); };
+    }else{
+      up.className = 'muted';
+      up.style.pointerEvents = 'none';
+      up.innerHTML = '<span class="icon">⬆</span><span class="path">.. (racine)</span>';
+    }
+    ul.appendChild(up);
+
+    const entries = (dirInfo.content||[]).slice().sort((a,b)=> a.name.localeCompare(b.name, undefined, {sensitivity:'base'}));
+    for(const e of entries){
+      const li = document.createElement('li');
+      li.innerHTML = `<span class="icon">📄</span><span class="path"></span>`;
+      li.querySelector('.path').textContent = e.name;
+      li.title = displayPathForDialog(e.path);
+
+      li.onclick = async () => {
+        try{
+          const info = await apiExplorer(e.path);
+          if(info.type === 'directory'){
+            li.classList.add('folder'); li.querySelector('.icon').textContent='📁';
+            await openDir(info.path);
+          }
+        }catch(err){ log('❌ '+(err.message||err)); }
+      };
+      li.ondblclick = li.onclick;
+
+      apiExplorer(e.path).then((i)=>{ if(i.type==='directory'){ li.classList.add('folder'); li.querySelector('.icon').textContent='📁'; } }).catch(()=>{});
+      ul.appendChild(li);
+    }
+  }
+
+  // ⇩⇩⇩  ICI: on filtre par nom contre config.json  ⇩⇩⇩
+  async function renderProjects(dirInfo){
+    const ul = $('#dlgProjects'); ul.innerHTML = '';
+    dlgState.selections.clear();
+
+    // Charger les noms déjà en config.json (insensibles à la casse)
+    let takenNames = new Set();
+    try {
+      const cfg = await loadConfigJson();
+      const names = (cfg.configs||[]).map(c => String(c?.name||'').toLowerCase()).filter(Boolean);
+      takenNames = new Set(names);
+    } catch { /* ignore */ }
+
+    const subs = [];
+    await Promise.all((dirInfo.content||[]).map(async e=>{
+      try{
+        const r = await apiExplorer(e.path);
+        if(r.type === 'directory'){
+          const files = ['index.html','index.ts','index.js'];
+          const hasIndex = (r.content||[]).some(x => files.includes(String(x.name||'').toLowerCase()));
+          if(hasIndex) subs.push({ name: e.name, path: stripWinPrefix(r.path) });
+        }
+      }catch{}
+    }));
+
+    // ⚠️ Filtrer les sous-dossiers dont le NOM est déjà présent dans config.json
+    const filtered = subs
+      .filter(s => !takenNames.has(String(s.name).toLowerCase()))
+      .sort((a,b)=> a.name.localeCompare(b.name, undefined, {sensitivity:'base'}));
+
+    if(!filtered.length){
+      ul.innerHTML = '<li class="small muted" style="padding:8px;">(aucun sous-dossier disponible&nbsp;: soit aucun index.* détecté, soit tous les noms existent déjà dans <code>config.json</code>)</li>';
+      return;
+    }
+
+    for(const s of filtered){
+      const li = document.createElement('li');
+      li.innerHTML = `
+        <input type="checkbox" class="pick" />
+        <span class="icon">📁</span>
+        <span class="path"></span>
+      `;
+      li.querySelector('.path').textContent = s.name;
+      li.title = displayPathForDialog(s.path);
+      const cb = li.querySelector('.pick');
+      cb.addEventListener('change', ()=>{
+        if(cb.checked) dlgState.selections.add(s.path);
+        else dlgState.selections.delete(s.path);
+      });
+      ul.appendChild(li);
+    }
+  }
+
+  $('#dlgPath').addEventListener('keydown', (e)=>{
+    if(e.key !== 'Enter') return;
+    const typed = $('#dlgPath').value.trim();
+    let target = typed;
+    if(dlgState.displayRel && dlgState.displayBase && !/^[A-Za-z]:[\\/]|^\//.test(typed)){
+      target = typed ? joinPath(dlgState.displayBase, typed) : dlgState.displayBase;
+    }
+    openDir(target || '');
+  });
+
+  $('#dlgValidate').addEventListener('click', ()=>{
+    const payload = (dlgState.mode === 'code')
+      ? { base: dlgState.current, selected: Array.from(dlgState.selections) }
+      : dlgState.current;
+    dlg.close();
+    if(dlgState.onPick) dlgState.onPick(payload);
+  });
+  $('#dlgClose').addEventListener('click', ()=> dlg.close());
+
+  function openDirDialog({ mode, startPath, onPick }){
+    setDlgMode(mode);
+    dlgState.onPick = onPick || null;
+    dlgState.displayRel = !startPath;
+    dlgState.displayBase = null;
+    dlg.showModal();
+    openDir(startPath || '');
+  }
+
+  /* ---------- Page principale : 3 zones ---------- */
+  const state = { cwd: null, code: { base: null, selected: [] }, exec: null, out: null };
+  const relToCwd = (p) => state.cwd ? relFrom(p, state.cwd) : stripWinPrefix(p||'');
+
+  async function initCwd(){
+    try{
+      const info = await apiExplorer("");
+      if(info?.path) state.cwd = stripWinPrefix(info.path);
+    }catch(e){
+      console.warn('CWD via /api/explorer "" indisponible :', e);
+      state.cwd = null;
+    }
+  }
+
+  function renderCodeSelected(){
+    const box = $('#codeSelected'); box.innerHTML = '';
+    if(!state.code.selected.length){
+      box.innerHTML = '<span class="muted small">(aucun projet sélectionné)</span>';
+      return;
+    }
+    const seen = new Set();
+    for(const p of state.code.selected){
+      if(seen.has(p)) continue;
+      seen.add(p);
+      const chip = document.createElement('div');
+      chip.className = 'chip';
+      chip.innerHTML = `<strong>${basename(p)}</strong> <code>${relToCwd(p)}</code>`;
+      box.appendChild(chip);
+    }
+  }
+
+  // Explorer (Code)
+  $('#codePick').addEventListener('click', ()=>{
+    const start = state.code.base || '';
+    openDirDialog({
+      mode: 'code',
+      startPath: start,
+      onPick: ({ base, selected })=>{
+        const sanitized = sanitizeCodeBase(base || state.code.base || '');
+        state.code.base = sanitized || state.code.base;
+
+        $('#exploredBase').textContent = state.code.base ? relToCwd(state.code.base) : '(aucun)';
+        $('#exploredBase').classList.toggle('muted', !state.code.base);
+
+        state.code.selected = Array.isArray(selected) ? selected : [];
+        renderCodeSelected();
+
+        $('#execShow').textContent = state.exec ? relToCwd(state.exec) : '(aucun)';
+        $('#execShow').classList.toggle('muted', !state.exec);
+        $('#outShow').textContent  = state.out  ? relToCwd(state.out)  : '(aucun)';
+        $('#outShow').classList.toggle('muted', !state.out);
+      }
+    });
+  });
+
+  // Explorer (Exec)
+  $('#execPick').addEventListener('click', ()=>{
+    const start = state.exec || '';
+    openDirDialog({
+      mode: 'single',
+      startPath: start,
+      onPick: (picked)=>{
+        state.exec = picked || state.exec;
+        $('#execShow').textContent = state.exec ? relToCwd(state.exec) : '(aucun)';
+        $('#execShow').classList.toggle('muted', !state.exec);
+        renderCodeSelected();
+      }
+    });
+  });
+
+  // Explorer (Out)
+  $('#outPick').addEventListener('click', ()=>{
+    const start = state.out || '';
+    openDirDialog({
+      mode: 'single',
+      startPath: start,
+      onPick: (picked)=>{
+        state.out = picked || state.out;
+        $('#outShow').textContent = state.out ? relToCwd(state.out) : '(aucun)';
+        $('#outShow').classList.toggle('muted', !state.out);
+      }
+    });
+  });
+
+  // Collecte config existante
+  async function collectExisting(){
+    const cfg = await loadConfigJson();
+    const list = Array.isArray(cfg.configs) ? cfg.configs.filter(Boolean) : [];
+    return { cfg, list, folders: new Set(list.map(c => String(stripWinPrefix(c.folder||'')))) };
+  }
+
+  // Ajouter configs — chemins stockés relatifs au CWD si possible
+  $('#addBtn').addEventListener('click', async ()=>{
+    try{
+      log('');
+      if(!state.code.base){ log('⚠️ Choisissez d’abord une base “Code” (bouton Explorer).'); return; }
+      if(!state.exec){ log('⚠️ Choisissez un dossier Executable.'); return; }
+      if(!state.out){  log('⚠️ Choisissez un dossier Output.'); return; }
+      if(!state.code.selected.length){ log('⚠️ Sélectionnez au moins un projet dans la zone Code.'); return; }
+
+      const execRel = relToCwd(state.exec);
+      const outRel  = relToCwd(state.out);
+
+      const { cfg, list, folders } = await collectExisting();
+
+      const toAdd = [];
+      for(const absSel of state.code.selected){
+        const abs = stripWinPrefix(absSel);
+        const name = basename(abs);
+        if(!name) continue;
+
+        const folderForConfig = relToCwd(abs);
+        if(folders.has(folderForConfig)) continue; // dédoublonnage par dossier (sécurité)
+        toAdd.push({ name, folder: folderForConfig, executable: execRel, output: outRel });
+      }
+
+      if(!toAdd.length){ log('✅ Rien à ajouter (doublons ou vide).'); return; }
+
+      const payload = {
+        selected: cfg.selected || list[0]?.name || toAdd[0].name,
+        configs: [...list, ...toAdd]
+      };
+      await saveConfigJson(payload);
+      log(`✅ ${toAdd.length} configuration(s) ajoutée(s) à config.json`);
+    }catch(e){ log('❌ '+(e.message||e)); }
+  });
+
+  $('#cancelBtn').addEventListener('click', ()=> { location.href = '/'; });
+
+  // Démarrage: récupérer d'abord le CWD
+  await initCwd();
+</script>

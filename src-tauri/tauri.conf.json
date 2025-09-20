@@ -1,0 +1,53 @@
+{
+  "build": {
+    "beforeBuildCommand": "",
+    "beforeDevCommand": "",
+    "devPath": "../dist",
+    "distDir": "../dist"
+  },
+  "package": {
+    "productName": "TauriKargo",
+    "version": "0.1.0"
+  },
+  "tauri": {
+    "windows": [
+      {
+        "label": "main",
+
+        "resizable": true,
+        "url": "index.html"
+      }
+    ],
+    "security": {
+    
+      "dangerousRemoteDomainIpcAccess": [
+        {
+          "domain": "http://127.0.0.1",
+          "windows": ["main"],
+          "enableTauriAPI": true
+       
+        },
+        {
+          "domain": "http://localhost",
+          "windows": ["main"],
+          "enableTauriAPI": true
+        }
+      ],
+      "csp": null
+    },
+    "allowlist": {
+      "fs": {
+        "all": true
+      },
+      "shell": {
+        "all": true
+      },
+      "dialog": {
+        "open": true
+      },
+      "path": {
+        "all": true
+      }
+    }
+  }
+}

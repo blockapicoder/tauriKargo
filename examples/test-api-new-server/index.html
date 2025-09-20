@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Lancer un /api/newServer et ouvrir AA</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --bg:#0b0d10; --card:#151922; --muted:#9aa4b2; --txt:#e7edf7; --accent:#7c9cff; }
+    html,body { height:100%; }
+    body {
+      margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Apple Color Emoji";
+      background:linear-gradient(180deg,#0b0d10,#0c111a); color:var(--txt); display:flex; align-items:center; justify-content:center;
+    }
+    .card {
+      width:min(740px, 92vw); background:var(--card); border-radius:16px; padding:24px; box-shadow:0 10px 30px rgba(0,0,0,.35);
+      border:1px solid rgba(255,255,255,.06);
+    }
+    h1 { margin:0 0 18px; font-size:20px; letter-spacing:.2px; }
+    p.hint { margin-top:0; margin-bottom:18px; color:var(--muted); font-size:13px; }
+    form { display:grid; gap:14px; }
+    .row { display:grid; grid-template-columns: 1fr; gap:10px; }
+    @media (min-width: 720px) { .row-2 { grid-template-columns: 1fr 220px; } }
+    label { font-size:13px; color:#cbd5e1; margin-bottom:6px; display:block; }
+    input[type="text"], input[type="number"] {
+      width:100%; padding:12px 12px; border-radius:10px; border:1px solid rgba(255,255,255,.1); background:#0f141c; color:var(--txt);
+      outline:none; transition:border-color .15s, box-shadow .15s;
+    }
+    input[type="text"]:focus, input[type="number"]:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(124,156,255,.15); }
+    .actions { display:flex; gap:10px; align-items:center; margin-top:4px; }
+    button {
+      padding:11px 14px; border-radius:10px; border:1px solid rgba(255,255,255,.1); background:var(--accent); color:#0a0f1a;
+      font-weight:600; cursor:pointer; transition:transform .04s ease-in-out, filter .15s;
+    }
+    button:disabled { filter:grayscale(.4) brightness(.8); cursor:not-allowed; }
+    .ghost { background:transparent; color:var(--txt); border-color:rgba(255,255,255,.16); }
+    .status { margin-top:12px; font-size:13px; color:var(--muted); white-space:pre-wrap; }
+    .ok { color:#a7f3d0; }
+    .err { color:#fecaca; }
+    .small { font-size:12px; color:#93a3b8; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .spacer { height:6px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Créer un serveur & ouvrir la fenêtre <span class="mono">AA</span></h1>
+    <p class="hint">Renseigne les chemins <b>code</b> et <b>executable</b> (locaux), et un <b>port</b> si tu veux forcer. Le bouton appelle <span class="mono">POST /api/newServer</span>, puis ouvre/relance une fenêtre nommée <span class="mono">AA</span> vers ce serveur.</p>
+
+    <form id="form">
+      <div>
+        <label for="code">Chemin <span class="mono">code</span></label>
+        <input id="code" type="text" placeholder="ex: C:\projets\monapp\code ou /home/me/app/code" required />
+      </div>
+
+      <div>
+        <label for="exec">Chemin <span class="mono">executable</span></label>
+        <input id="exec" type="text" placeholder="ex: C:\projets\monapp\executable ou /home/me/app/executable" required />
+      </div>
+
+      <div class="row row-2">
+        <div>
+          <label for="port">Port (optionnel)</label>
+          <input id="port" type="number" inputmode="numeric" min="1" max="65535" placeholder="ex: 8088 (optionnel)" />
+        </div>
+        <div class="actions" style="align-self:end;">
+          <button id="submit" type="submit">Lancer le serveur & ouvrir AA</button>
+          <button id="openAA" class="ghost" type="button" title="Ouvrir la fenêtre AA si tu connais déjà le port">Ouvrir AA…</button>
+        </div>
+      </div>
+    </form>
+
+    <div class="status small" id="status">Prêt.</div>
+    <div class="spacer"></div>
+    <div class="small">Astuce : la fenêtre nommée <span class="mono">AA</span> est <i>réutilisée</i> si elle existe déjà.</div>
+  </div>
+
+  <script>
+    const $ = (sel) => document.querySelector(sel);
+    const codeEl = $('#code');
+    const execEl = $('#exec');
+    const portEl = $('#port');
+    const statusEl = $('#status');
+    const submitBtn = $('#submit');
+    const openAA = $('#openAA');
+
+    // Restaure les dernières valeurs (confort)
+    try {
+      const mem = JSON.parse(localStorage.getItem('newServerForm') || '{}');
+      if (mem.code) codeEl.value = mem.code;
+      if (mem.exec) execEl.value = mem.exec;
+      if (mem.port) portEl.value = mem.port;
+    } catch {}
+
+    function saveForm() {
+      const data = {
+        code: codeEl.value.trim(),
+        exec: execEl.value.trim(),
+        port: portEl.value.trim()
+      };
+      localStorage.setItem('newServerForm', JSON.stringify(data));
+    }
+
+    function setStatus(msg, ok=false, err=false) {
+      statusEl.textContent = msg;
+      statusEl.classList.toggle('ok', ok);
+      statusEl.classList.toggle('err', err);
+    }
+
+    function parsePort(value) {
+      if (!value) return null;
+      const n = Number(value);
+      if (!Number.isFinite(n) || n <= 0 || n > 65535) return 'Port invalide';
+      return n | 0;
+    }
+
+    async function callNewServer({ code, executable, port }) {
+      const body = { code, executable };
+      if (typeof port === 'number' && port > 0) body.port = port;
+
+      const resp = await fetch('/api/newServer', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+
+      let data;
+      try { data = await resp.json(); }
+      catch { throw new Error(`Réponse non JSON (HTTP ${resp.status})`); }
+
+      if (!resp.ok || !data?.ok) {
+        throw new Error(data?.message || `Erreur HTTP ${resp.status}`);
+      }
+      if (!data?.port) {
+        throw new Error('Réponse sans port retourné');
+      }
+      return data.port;
+    }
+
+    function openAAWindow(port) {
+      const url = `http://127.0.0.1:${port}/`;
+      // Ouvre (ou réutilise) la fenêtre nommée "AA"
+      window.open(url, 'AA');
+    }
+
+    $('#form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const code = codeEl.value.trim();
+      const executable = execEl.value.trim();
+      const portRaw = portEl.value.trim();
+
+      if (!code || !executable) {
+        setStatus('Veuillez remplir les champs "code" et "executable".', false, true);
+        return;
+      }
+
+      const portParsed = parsePort(portRaw);
+      if (portParsed === 'Port invalide') {
+        setStatus('Port invalide (1–65535).', false, true);
+        return;
+      }
+
+      submitBtn.disabled = true;
+      setStatus('Démarrage du serveur…');
+
+      try {
+        saveForm();
+        const port = await callNewServer({ code, executable, port: portParsed ?? undefined });
+        setStatus(`✅ Serveur lancé sur 127.0.0.1:${port}. Ouverture de la fenêtre AA…`, true, false);
+        openAAWindow(port);
+      } catch (err) {
+        console.error(err);
+        setStatus(`❌ ${err.message || err}`, false, true);
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+
+    // Bouton "Ouvrir AA…" : demande juste un port et ouvre/reutilise AA
+    openAA.addEventListener('click', () => {
+      const p = prompt('Port du serveur à ouvrir dans la fenêtre "AA" :', portEl.value || '');
+      const parsed = parsePort((p || '').trim());
+      if (parsed && parsed !== 'Port invalide') {
+        openAAWindow(parsed);
+        setStatus(`Ouverture/rechargement de AA sur 127.0.0.1:${parsed}`, true, false);
+      } else if (parsed === 'Port invalide') {
+        setStatus('Port invalide saisi pour "Ouvrir AA".', false, true);
+      }
+    });
+  </script>
+</body>
+</html>

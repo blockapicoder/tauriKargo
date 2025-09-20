@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AS + Monaco (AMD stable)</title>
+
+  <!-- Import map pour AS/Binaryen (ok) -->
+  <script type="importmap">
+  {
+    "imports": {
+      "assemblyscript": "/node_modules/assemblyscript/dist/assemblyscript.js",
+      "assemblyscript/asc": "/node_modules/assemblyscript/dist/asc.js",
+      "binaryen": "/node_modules/binaryen/index.js",
+      "long": "/node_modules/long/index.js"
+    }
+  }
+  </script>
+
+  <!-- CSS Monaco via <link> -->
+  <link rel="stylesheet" href="/node_modules/monaco-editor/min/vs/editor/editor.main.css">
+
+  <style>
+    html,body{height:100%;margin:0}
+    #editor{height:40vh;border:1px solid #ddd}
+    #log{background:#111;color:#0f0;padding:8px;min-height:20vh}
+    #build{margin:8px 0}
+  </style>
+</head>
+<body>
+  <div id="editor"></div>
+  <textarea id="as-src" style="display:none"></textarea>
+  <button id="build">Compiler & Exécuter</button>
+  <pre id="log"></pre>
+
+  <!-- 0) Purge d'éventuels loaders AMD déjà présents -->
+  <script>
+    if (window.require) delete window.require;
+    if (window.define)  delete window.define;
+  </script>
+
+  <!-- 1) Loader AMD de Monaco (même version que le reste) -->
+  <script src="/node_modules/monaco-editor/min/vs/loader.js?v=0430"></script>
+  <script>
+    // 2) Configure 'vs' vers la même racine (min/vs)
+    require.config({ paths: { 'vs': '/node_modules/monaco-editor/min/vs' } });
+
+    // 3) Charge l'éditeur (AUCUNE référence à /esm/)
+    require(['vs/editor/editor.main'], function () {
+
+      // --- (A) Réglages TS pour accepter nos libs additionnelles
+      monaco.languages.typescript.typescriptDefaults.setEagerModelSync(true);
+      monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
+        allowNonTsExtensions: true,
+        target: monaco.languages.typescript.ScriptTarget.ES2020,
+        module: monaco.languages.typescript.ModuleKind.ESNext,
+        noLib: false,
+        lib: [] // pas de DOM par défaut
+      });
+
+      // --- (B) Fallback minimal : types numériques d'AssemblyScript
+      const FALLBACK_AS_TYPES = `
+declare type i8 = number;  declare type i16 = number;  declare type i32 = number;  declare type i64 = bigint;
+declare type u8 = number;  declare type u16 = number;  declare type u32 = number;  declare type u64 = bigint;
+declare type isize = number; declare type usize = number; declare type f32 = number; declare type f64 = number;
+// Quelques builtins utiles côté typing (no-op pour l'éditeur)
+declare function unreachable(): never;
+declare function select<T>(cond: bool, a: T, b: T): T;
+declare type bool = boolean;
+      `;
+      monaco.languages.typescript.typescriptDefaults.addExtraLib(
+        FALLBACK_AS_TYPES,
+        "file:///assemblyscript-basics.d.ts"
+      );
+
+      // --- (C) Tentative (best-effort) de charger de vrais .d.ts d'AssemblyScript si présents
+      // Selon la version d'AS, ces chemins peuvent exister (ou pas). On ignore silencieusement les 404.
+      const asTypeCandidates = [
+        "/node_modules/assemblyscript/std/assembly/index.d.ts",
+        "/node_modules/assemblyscript/std/portable/index.d.ts",
+        "/node_modules/assemblyscript/types/assemblyscript.d.ts",
+        "/node_modules/assemblyscript/assembly/index.d.ts"
+      ];
+      asTypeCandidates.forEach(async (url) => {
+        try {
+          const res = await fetch(url, { cache: "no-store" });
+          if (res.ok) {
+            const text = await res.text();
+            monaco.languages.typescript.typescriptDefaults.addExtraLib(text, "file://" + url);
+          }
+        } catch { /* ignore */ }
+      });
+
+      // --- (D) Création du modèle + éditeur
+      const initialCode = `export function add(a: u32, b: u32): u32 {
+    let r: u32 = a
+    for (let i: u32 = 0; i < b; i++) {
+        r += i
+    }
+    return r
+}
+    export function main():u32 { return add(10,50)}`;
+      const modelUri = monaco.Uri.parse("file:///main.as.ts"); // URI stable pour TS
+      const model = monaco.editor.createModel(initialCode, "typescript", modelUri);
+
+      const editor = monaco.editor.create(document.getElementById('editor'), {
+        model,
+        theme: 'vs-dark',
+        automaticLayout: true
+      });
+
+      // --- (E) Miroir vers le textarea attendu par ton pipeline
+      const ta = document.getElementById('as-src');
+      const sync = () => { ta.value = editor.getValue(); };
+      sync();
+      editor.onDidChangeModelContent(sync);
+    });
+  </script>
+
+  <!-- Ton code de build/exécution (transpilé en JS !) -->
+  <script type="module" src="./index.ts"></script>
+</body>
+</html>

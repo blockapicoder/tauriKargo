@@ -1,0 +1,125 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Runner – /api/run demo</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; max-width: 820px; margin: 40px auto; padding: 0 16px; }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin: 12px 0; }
+  button { padding:10px 16px; border-radius: 10px; border: 1px solid rgba(128,128,128,.35); cursor:pointer; }
+  code, pre { background: rgba(128,128,128,.12); padding: 6px 8px; border-radius: 8px; }
+  pre { white-space: pre-wrap; }
+  .muted { opacity:.7; }
+</style>
+
+<h1>Exécution d’un processus via <code>/api/run</code></h1>
+<p class="muted">Démarre automatiquement <code>deno</code> avec <code>run test.ts</code> en <strong>détaché</strong>, puis vous pouvez
+  vérifier le statut ou arrêter le processus. En mode détaché, la sortie n’est pas capturée (pas de logs).</p>
+
+<div class="row">
+  <button id="btnStatus" disabled>Statut</button>
+  <button id="btnStop" disabled>Stop</button>
+</div>
+
+<div class="row">
+  <div>Dernier <code>id</code> : <code id="runId">—</code></div>
+  <div>PID : <code id="runPid">—</code></div>
+</div>
+
+<h3>Réponse /api/run</h3>
+<pre id="outRun">en attente…</pre>
+
+<h3>Dernier statut</h3>
+<pre id="outStatus">—</pre>
+
+<script type="module">
+  const $ = (s) => document.querySelector(s);
+  let lastId = null;
+  let lastPid = null;
+
+  function setButtonsEnabled(enabled) {
+    $("#btnStatus").disabled = !enabled;
+    $("#btnStop").disabled = !enabled;
+  }
+
+  async function startDetached() {
+    try {
+      // ⚠️ L'API attend 'detach' (pas 'detatch')
+      const res = await fetch("/api/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          executableName: "deno",
+          arguments: "run test.ts",
+          detach: true
+        }),
+      });
+      const json = await res.json();
+      $("#outRun").textContent = JSON.stringify(json, null, 2);
+
+      if (json && json.ok && json.id) {
+        lastId = json.id;
+        lastPid = json.pid ?? null;
+        $("#runId").textContent = String(lastId);
+        $("#runPid").textContent = lastPid != null ? String(lastPid) : "—";
+        setButtonsEnabled(true);
+      } else {
+        setButtonsEnabled(false);
+      }
+    } catch (e) {
+      $("#outRun").textContent = "❌ " + (e?.message || e);
+      setButtonsEnabled(false);
+    }
+  }
+
+  async function checkStatus() {
+    if (lastId == null) {
+      $("#outStatus").textContent = "❌ Aucun id connu. Lancez d’abord le processus.";
+      return;
+    }
+    try {
+      const res = await fetch("/api/run/status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: lastId }),
+      });
+      const json = await res.json();
+      $("#outStatus").textContent = JSON.stringify(json, null, 2);
+
+      // Si le process est terminé, on peut désactiver STOP
+      if (json && json.ok && json.running === false) {
+        $("#btnStop").disabled = true;
+      }
+    } catch (e) {
+      $("#outStatus").textContent = "❌ " + (e?.message || e);
+    }
+  }
+
+  async function stopProcess() {
+    if (lastId == null) {
+      $("#outStatus").textContent = "❌ Aucun id connu. Lancez d’abord le processus.";
+      return;
+    }
+    try {
+      const res = await fetch("/api/run/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: lastId }),
+      });
+      const json = await res.json();
+      $("#outStatus").textContent = JSON.stringify(json, null, 2);
+      // Après un stop réussi, désactiver les boutons
+      if (json && json.ok) {
+        setButtonsEnabled(false);
+      }
+    } catch (e) {
+      $("#outStatus").textContent = "❌ " + (e?.message || e);
+    }
+  }
+
+  $("#btnStatus").addEventListener("click", checkStatus);
+  $("#btnStop").addEventListener("click", stopProcess);
+
+  // Démarre tout de suite au chargement
+  startDetached();
+</script>

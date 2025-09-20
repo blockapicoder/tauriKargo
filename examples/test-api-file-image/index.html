@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Uploader une image → /api/file</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --bg:#0b1020; --panel:#121a30; --muted:#7b86a6; --accent:#4fa3ff; --ok:#1fbf75; --err:#ff5c5c; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:var(--bg); color:#eaf0ff; }
+    .wrap { max-width: 860px; margin: 40px auto; padding: 0 16px; }
+    h1 { font-size: 1.4rem; margin: 0 0 16px; font-weight: 700; }
+    .card { background: var(--panel); border: 1px solid #1f2b4a; border-radius: 16px; padding: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.25); }
+    label { display:block; font-size:.9rem; color: var(--muted); margin-bottom: 6px; }
+    input[type="text"] { width:100%; padding:10px 12px; border-radius: 12px; border:1px solid #2a375a; background:#0f1730; color:#eaf0ff; outline:none; }
+    input[type="text"]:focus { border-color: var(--accent); }
+    .row { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .drop {
+      border: 2px dashed #2f416d; border-radius: 16px; padding: 22px; text-align:center; background:#0f1730; color:#c8d3ff;
+      transition: border-color .2s, background .2s;
+    }
+    .drop.drag { border-color: var(--accent); background: #0b1533; }
+    .muted { color: var(--muted); font-size:.9rem; }
+    .actions { display:flex; gap:10px; align-items:center; margin-top:16px; }
+    button {
+      appearance:none; border:none; background: var(--accent); color:white; font-weight:700; padding:10px 14px; border-radius:12px; cursor:pointer;
+      box-shadow: 0 6px 14px rgba(79,163,255,0.3);
+    }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    .preview { display:flex; gap:16px; align-items:center; margin-top:12px; flex-wrap:wrap; }
+    .preview img { max-width: 220px; max-height: 220px; border-radius: 12px; border:1px solid #2a375a; }
+    .progress { height: 8px; width:100%; background:#152046; border-radius: 99px; overflow:hidden; margin-top:8px; }
+    .bar { height:100%; width:0%; background: linear-gradient(90deg, var(--accent), #7bc3ff); transition: width .1s; }
+    .msg { margin-top:10px; font-size:.95rem; }
+    .msg.ok { color: var(--ok); }
+    .msg.err { color: var(--err); }
+    a { color:#9accff; }
+    .hint { font-size:.85rem; color: var(--muted); margin-top:6px; }
+    .pill { background:#16234b; border:1px solid #2a375a; color:#c8d3ff; padding:2px 8px; border-radius:999px; font-size:.8rem; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Uploader une image <span class="pill">POST /api/file/&lt;chemin&gt;</span></h1>
+    <div class="card">
+      <div class="drop" id="drop">
+        <div><strong>Glisse-dépose</strong> une image ici, ou choisis un fichier :</div>
+        <div style="margin-top:10px">
+          <input id="file" type="file" accept="image/*" />
+        </div>
+        <div class="hint">L’upload utilise <code>Content-Type: application/octet-stream</code> pour forcer le mode octets.</div>
+      </div>
+
+      <div class="preview" id="preview" style="display:none;">
+        <img id="thumb" alt="aperçu" />
+        <div>
+          <label for="folder">Dossier (relatif au root servi)</label>
+          <input type="text" id="folder" value="uploads" />
+          <div style="height:8px"></div>
+          <label for="fname">Nom de fichier (avec extension)</label>
+          <input type="text" id="fname" />
+          <div class="hint">Exemple : <code>photo.png</code> • L’extension est requise (on envoie en octet-stream).</div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="send" disabled>Enregistrer l’image</button>
+        <div class="progress" style="flex:1;">
+          <div class="bar" id="bar"></div>
+        </div>
+      </div>
+
+      <div class="msg" id="msg"></div>
+      <div class="hint">Une fois enregistrée, l’image sera accessible via son URL publique (ex : <code>/uploads/nom.png</code>).</div>
+    </div>
+  </div>
+
+  <script>
+    const $ = (s)=>document.querySelector(s);
+    const fileInput = $('#file');
+    const drop = $('#drop');
+    const preview = $('#preview');
+    const thumb = $('#thumb');
+    const folderInput = $('#folder');
+    const nameInput = $('#fname');
+    const sendBtn = $('#send');
+    const bar = $('#bar');
+    const msg = $('#msg');
+
+    let currentFile = null;
+
+    function sanitizeFileName(name) {
+      // garde [a-zA-Z0-9._-], remplace le reste par _
+      return name.replace(/[^a-zA-Z0-9._-]+/g, '_');
+    }
+    function extFromMime(mime) {
+      const map = {
+        'image/png': 'png',
+        'image/jpeg': 'jpg',
+        'image/jpg': 'jpg',
+        'image/webp': 'webp',
+        'image/gif': 'gif',
+        'image/bmp': 'bmp',
+        'image/svg+xml': 'svg',
+        'image/tiff': 'tiff',
+        'image/avif': 'avif',
+        'image/heic': 'heic'
+      };
+      return map[mime] || null;
+    }
+    function ensureExtension(name, file) {
+      if (/\.[a-z0-9]+$/i.test(name)) return name; // déjà une extension
+      const ext = extFromMime(file?.type || '') || 'bin';
+      return name + '.' + ext;
+    }
+
+    function showPreview(file) {
+      if (!file) return;
+      const url = URL.createObjectURL(file);
+      thumb.src = url;
+      preview.style.display = 'flex';
+      // propose un nom propre basé sur le fichier
+      const clean = sanitizeFileName(file.name || 'image');
+      nameInput.value = ensureExtension(clean, file);
+      sendBtn.disabled = false;
+      msg.textContent = '';
+      bar.style.width = '0%';
+    }
+
+    fileInput.addEventListener('change', (e)=>{
+      const f = e.target.files?.[0];
+      currentFile = f || null;
+      showPreview(currentFile);
+    });
+
+    ;['dragenter','dragover'].forEach(ev=>{
+      drop.addEventListener(ev,(e)=>{ e.preventDefault(); e.stopPropagation(); drop.classList.add('drag'); });
+    });
+    ;['dragleave','dragend','drop'].forEach(ev=>{
+      drop.addEventListener(ev,(e)=>{ e.preventDefault(); e.stopPropagation(); if(ev!=='drop') drop.classList.remove('drag'); });
+    });
+    drop.addEventListener('drop',(e)=>{
+      drop.classList.remove('drag');
+      const f = e.dataTransfer?.files?.[0];
+      if (f) {
+        fileInput.files = e.dataTransfer.files;
+        currentFile = f;
+        showPreview(currentFile);
+      }
+    });
+
+    sendBtn.addEventListener('click', async ()=>{
+      msg.textContent = '';
+      msg.className = 'msg';
+      bar.style.width = '0%';
+
+      const file = currentFile;
+      if (!file) { msg.textContent = 'Choisis un fichier.'; msg.classList.add('err'); return; }
+
+      let folder = (folderInput.value || 'uploads').trim();
+      folder = folder.replace(/^\/+|\/+$/g,''); // trim slashes
+      if (folder.includes('..')) { msg.textContent = "Le dossier ne doit pas contenir '..'"; msg.classList.add('err'); return; }
+
+      let name = (nameInput.value || file.name || 'image').trim();
+      name = sanitizeFileName(name);
+      name = ensureExtension(name, file);
+      if (name.includes('/') || name.includes('..')) { msg.textContent = "Nom de fichier invalide."; msg.classList.add('err'); return; }
+
+      const url = `/api/file/${encodeURIComponent(folder)}/${encodeURIComponent(name)}`;
+
+      // Upload avec XHR pour avoir la progression
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', url, true);
+      // Force le mode octets pour l’API
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+
+      xhr.upload.onprogress = (e)=>{
+        if (e.lengthComputable) {
+          const p = Math.round((e.loaded / e.total) * 100);
+          bar.style.width = p + '%';
+        }
+      };
+      xhr.onerror = ()=> {
+        msg.textContent = 'Erreur réseau pendant l’upload.';
+        msg.classList.add('err');
+      };
+      xhr.onload = ()=>{
+        try {
+          const res = JSON.parse(xhr.responseText || '{}');
+          if (xhr.status === 200 && res.ok) {
+            bar.style.width = '100%';
+            const publicUrl = `/${encodeURIComponent(folder)}/${encodeURIComponent(name)}`;
+            msg.innerHTML = `✅ Image enregistrée : <a href="${publicUrl}" target="_blank">${publicUrl}</a>`;
+            msg.classList.add('ok');
+          } else {
+            msg.textContent = res.message || ('Erreur ' + xhr.status);
+            msg.classList.add('err');
+          }
+        } catch (e) {
+          if (xhr.status === 200) {
+            bar.style.width = '100%';
+            const publicUrl = `/${encodeURIComponent(folder)}/${encodeURIComponent(name)}`;
+            msg.innerHTML = `✅ Image enregistrée : <a href="${publicUrl}" target="_blank">${publicUrl}</a>`;
+            msg.classList.add('ok');
+          } else {
+            msg.textContent = 'Réponse invalide du serveur.';
+            msg.classList.add('err');
+          }
+        }
+      };
+
+      // Envoi des octets
+      xhr.send(file);
+    });
+  </script>
+</body>
+</html>

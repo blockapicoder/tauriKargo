@@ -1,0 +1,404 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Tauri Static – Embed</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    max-width: 820px; margin: 40px auto; padding: 0 16px;
+  }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  p { margin: 0 0 16px; opacity: .8; }
+  label { display: block; margin-top: 12px; font-weight: 600; }
+  input[type=text] {
+    width: 100%; padding: 10px 12px; border-radius: 10px;
+    border: 1px solid rgba(128,128,128,.35);
+  }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  select {
+    min-width: 240px; padding: 8px 10px; border-radius: 10px;
+    border: 1px solid rgba(128,128,128,.35);
+  }
+  button {
+    margin-top: 12px; padding: 10px 16px; border-radius: 10px;
+    border: 1px solid rgba(128,128,128,.35); cursor: pointer;
+  }
+  .actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+  pre { margin-top: 16px; white-space: pre-wrap; padding: 12px; border-radius: 10px; background: rgba(128,128,128,.1); }
+</style>
+
+<h1>Créer un exécutable embarqué</h1>
+<p>Gère plusieurs configurations (dossier & fichier de sortie), enregistre dans <code>config.json</code>. Le bouton lance <code>/api/newServer</code> et ouvre une <b>nouvelle WebView</b> dont le <b>target</b> = <i>nom de la configuration sélectionnée</i>.<br>
+Si vous laissez le port <b>vide</b>, le serveur sera <b>arrêté automatiquement</b> quand la WebView se ferme ou si la popup est bloquée.</p>
+
+<label for="configSelect">Configuration</label>
+<div class="row">
+  <select id="configSelect"></select>
+  <button id="addCfg">Ajouter une configuration</button>
+  <button id="delCfg">Supprimer la configuration</button>
+  <!-- Nouveau bouton Explorer -->
+  <button id="openExplorer" title="Ouvrir la page d'exploration">Explorer…</button>
+</div>
+
+<label for="folder">Dossier à embarquer (folder / code)</label>
+<input id="folder" type="text" placeholder="ex: C:\projet\public" />
+
+<label for="executable">Dossier executable (executable)</label>
+<input id="executable" type="text" placeholder="ex: C:\projet\bin" />
+
+<label for="output">Chemin de sortie (output)</label>
+<input id="output" type="text" placeholder="ex: C:\projet\build\app-packed.exe" />
+
+<div class="actions">
+  <button id="go">Créer l'exécutable</button>
+  <button id="serveBtn">Lancer un nouveau serveur & ouvrir la WebView (target = config)</button>
+  <button id="saveCfg">Enregistrer configurations</button>
+</div>
+
+<pre id="out"></pre>
+
+<script type="module">
+  const $ = (s) => document.querySelector(s);
+
+  function setBusy(b) {
+    $("#go").disabled = b;
+    $("#serveBtn").disabled = b;
+    $("#saveCfg").disabled = b;
+    $("#addCfg").disabled = b;
+    $("#delCfg").disabled = b;
+    $("#configSelect").disabled = b;
+    $("#openExplorer").disabled = b; // <-- désactiver aussi le bouton Explorer
+  }
+
+  /** @typedef {{name:string, folder:string, output:string, executable?:string}} Cfg */
+  const state = {
+    /** @type {Cfg[]} */ configs: [],
+    /** @type {string|null} */ selected: null,
+  };
+
+  // Helpers
+  function findCfg(name) { return state.configs.find(c => c.name === name) || null; }
+  function ensureUniqueName(base) {
+    let name = base || "config";
+    if (!findCfg(name)) return name;
+    let i = 2;
+    while (findCfg(`${name}-${i}`)) i++;
+    return `${name}-${i}`;
+  }
+  function syncInputsToSelected() {
+    const sel = state.selected && findCfg(state.selected);
+    if (!sel) return;
+    $("#folder").value = sel.folder || "";
+    $("#output").value = sel.output || "";
+    $("#executable").value = sel.executable || "";
+  }
+  function syncSelectedFromInputs() {
+    const sel = state.selected && findCfg(state.selected);
+    if (!sel) return;
+    sel.folder = $("#folder").value.trim();
+    sel.output = $("#output").value.trim();
+    sel.executable = $("#executable").value.trim();
+  }
+  function renderSelect() {
+    const sel = $("#configSelect");
+    sel.innerHTML = "";
+    for (const c of state.configs) {
+      const opt = document.createElement("option");
+      opt.value = c.name;
+      opt.textContent = c.name;
+      sel.appendChild(opt);
+    }
+    if (state.selected && findCfg(state.selected)) {
+      sel.value = state.selected;
+    } else if (state.configs.length) {
+      state.selected = state.configs[0].name;
+      sel.value = state.selected;
+    }
+    syncInputsToSelected();
+  }
+  function serializeConfig() {
+    return { selected: state.selected, configs: state.configs };
+  }
+  function parsePortInput(raw) {
+    const v = String(raw || "").trim();
+    if (!v) return undefined; // auto-port => serveur éphémère (arrêt auto)
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0 || n > 65535) throw new Error("Port invalide (1–65535).");
+    return n | 0;
+  }
+  // Sanitize pour un nom de fenêtre sûr (évite _blank, espaces, etc.)
+  function targetFromConfigName(name) {
+    const cleaned = String(name || "")
+      .replace(/^\s+|\s+$/g, "")
+      .replace(/^_+/, "")
+      .replace(/[^\w\-.:]/g, "_")
+      .slice(0, 64);
+    return cleaned || "CFG";
+  }
+
+  // Arrêt du serveur enfant
+  async function stopServer(port) {
+    try {
+      const r = await fetch("/api/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ port })
+      });
+      const j = await r.json().catch(()=> ({}));
+      if (!r.ok || j.ok === false) {
+        throw new Error(j.message || r.statusText || "Échec arrêt");
+      }
+      return j;
+    } catch (e) {
+      throw e;
+    }
+  }
+
+  // Charger config.json
+  async function loadConfig() {
+    try {
+      const res = await fetch("/api/file/config.json", { method:"POST", cache: "no-cache" });
+      if (!res.ok) throw new Error("config.json absent");
+      const cfg = await res.json();
+
+      if (cfg && typeof cfg === "object" && Array.isArray(cfg.configs)) {
+        state.configs = cfg.configs.filter(Boolean).map(c => ({
+          name: String(c.name ?? "config"),
+          folder: String(c.folder ?? ""),
+          output: String(c.output ?? ""),
+          executable: String(c.executable ?? ""),
+        }));
+        state.selected = typeof cfg.selected === "string" ? cfg.selected : (state.configs[0]?.name ?? null);
+      } else if (cfg && typeof cfg === "object" && ("folder" in cfg || "output" in cfg)) {
+        const name = "config";
+        state.configs = [{
+          name,
+          folder: String(cfg.folder ?? ""),
+          output: String(cfg.output ?? ""),
+          executable: String(cfg.executable ?? ""),
+        }];
+        state.selected = name;
+      } else {
+        state.configs = [];
+        state.selected = null;
+      }
+
+      if (!state.configs.length) {
+        const name = "config";
+        state.configs.push({ name, folder: "", output: "", executable: "" });
+        state.selected = name;
+      }
+
+      renderSelect();
+      $("#out").textContent = "⚙️ configurations chargées";
+    } catch (e) {
+      if (!state.configs.length) {
+        const name = "config";
+        state.configs = [{
+          name,
+          folder: $("#folder").value.trim() || "",
+          output: $("#output").value.trim() || "",
+          executable: $("#executable").value.trim() || ""
+        }];
+        state.selected = name;
+        renderSelect();
+      }
+      console.warn("Config load:", e);
+    }
+  }
+  await loadConfig();
+
+  // UI events
+  $("#configSelect").addEventListener("change", () => {
+    syncSelectedFromInputs();
+    state.selected = $("#configSelect").value || state.selected;
+    syncInputsToSelected();
+    $("#out").textContent = "🔁 Configuration sélectionnée : " + state.selected;
+  });
+
+  $("#addCfg").addEventListener("click", () => {
+    const base = state.selected || "config";
+    let proposed = ensureUniqueName(base);
+    const name = (prompt("Nom de la nouvelle configuration :", proposed) || "").trim();
+    if (!name) { $("#out").textContent = "❌ Nom de configuration vide."; return; }
+    const unique = ensureUniqueName(name);
+
+    syncSelectedFromInputs();
+    const folder = $("#folder").value.trim();
+    const output = $("#output").value.trim();
+    const executable = $("#executable").value.trim();
+
+    state.configs.push({ name: unique, folder, output, executable });
+    state.selected = unique;
+    renderSelect();
+    $("#out").textContent = `✅ Configuration ajoutée : ${unique}`;
+  });
+
+  $("#delCfg").addEventListener("click", () => {
+    const selName = state.selected;
+    if (!selName) { $("#out").textContent = "❌ Aucune configuration sélectionnée."; return; }
+    const selIndex = state.configs.findIndex(c => c.name === selName);
+    if (selIndex === -1) { $("#out").textContent = "❌ Configuration introuvable."; return; }
+
+    if (!confirm(`Supprimer la configuration "${selName}" ?`)) return;
+
+    syncSelectedFromInputs();
+    state.configs.splice(selIndex, 1);
+
+    if (state.configs.length === 0) {
+      state.configs.push({ name: "config", folder: "", output: "", executable: "" });
+      state.selected = "config";
+    } else {
+      const next = state.configs[selIndex] || state.configs[selIndex - 1] || state.configs[0];
+      state.selected = next.name;
+    }
+
+    renderSelect();
+    $("#out").textContent = `🗑️ Configuration supprimée : ${selName}`;
+  });
+
+  // Enregistrer SANS servir
+  $("#saveCfg").addEventListener("click", async () => {
+    syncSelectedFromInputs();
+    $("#out").textContent = "⏳ Enregistrement des configurations...";
+    setBusy(true);
+    try {
+      const payload = serializeConfig();
+      const res = await fetch("/api/file/config.json", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.ok === false) {
+        const msg = (json && json.message) ? json.message : res.statusText;
+        throw new Error("Écriture config.json échouée: " + msg);
+      }
+      $("#out").textContent = "✅ Configurations enregistrées dans config.json";
+    } catch (e) {
+      $("#out").textContent = "❌ " + (e.message || e);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  // Créer l'exécutable
+  $("#go").addEventListener("click", async () => {
+    syncSelectedFromInputs();
+    const sel = state.selected && findCfg(state.selected);
+    if (!sel) { $("#out").textContent = "❌ Aucune configuration sélectionnée."; return; }
+    const { folder, output, executable } = sel;
+
+    $("#out").textContent = "⏳ Création en cours...";
+    setBusy(true);
+    try {
+      const res = await fetch("/api/embed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: folder, output:`${output}\\${state.selected}.exe`, executable }),
+      });
+      const json = await res.json();
+      $("#out").textContent = (json.ok ? "✅ " : "❌ ") + json.message;
+    } catch (e) {
+      $("#out").textContent = "❌ " + e;
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  // ➜ Lancer newServer et OUVRIR une WebView nommée (target = nom de la config)
+  //    Si port = vide => serveur éphémère : on l'arrête à la fermeture de la WebView (ou si popup bloquée).
+  $("#serveBtn").addEventListener("click", async () => {
+    syncSelectedFromInputs();
+    const sel = state.selected && findCfg(state.selected);
+    if (!sel) { $("#out").textContent = "❌ Aucune configuration sélectionnée."; return; }
+    if (!sel.folder) { $("#out").textContent = "❌ Le dossier à servir est vide."; return; }
+
+    let rawPort = prompt("Port à utiliser (laisser vide pour auto => serveur éphémère) :", "");
+    let port, ephemeral;
+    try {
+      port = parsePortInput(rawPort);
+      ephemeral = (typeof port !== "number"); // vide => auto => éphémère
+    } catch (e) {
+      $("#out").textContent = "❌ " + (e.message || e);
+      return;
+    }
+
+    $("#out").textContent = "⏳ Démarrage du nouveau serveur...";
+    setBusy(true);
+    try {
+      const body = { code: sel.folder, executable: sel.executable };
+      if (!ephemeral) body.port = port;
+
+      const resServe = await fetch("/api/newServer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const jsonServe = await resServe.json().catch(() => ({}));
+      if (!resServe.ok || jsonServe.ok === false) {
+        const msg = (jsonServe && jsonServe.message) ? jsonServe.message : resServe.statusText;
+        throw new Error("newServer failed: " + msg);
+      }
+      const assignedPort = jsonServe.port;
+      if (!assignedPort) throw new Error("Réponse /api/newServer sans port.");
+
+      const target = targetFromConfigName(state.selected);
+      const url = `http://127.0.0.1:${assignedPort}/`;
+
+      $("#out").textContent = `✅ Serveur lancé sur ${url}\n🪟 Ouverture (target = ${target})...`;
+
+      const w = window.open(url, target);
+
+      if (!w) {
+        $("#out").textContent += `\n⚠️ Popup bloquée par le navigateur.`;
+        if (ephemeral) {
+          $("#out").textContent += `\n🛑 Arrêt du serveur éphémère...`;
+          try {
+            await stopServer(assignedPort);
+            $("#out").textContent += `\n✅ Serveur arrêté.`;
+          } catch (e) {
+            $("#out").textContent += `\n❌ Échec arrêt: ${(e.message||e)}`;
+          }
+        }
+        setBusy(false);
+        return;
+      }
+
+      // Si serveur éphémère => surveiller la fermeture et couper le serveur
+      if (ephemeral) {
+        $("#out").textContent += `\n⏳ Surveille la fermeture de la WebView pour arrêter le serveur...`;
+        const timer = setInterval(async () => {
+          try {
+            if (w.closed) {
+              clearInterval(timer);
+              $("#out").textContent += `\n🛑 WebView fermée — arrêt du serveur...`;
+              try {
+                await stopServer(assignedPort);
+                $("#out").textContent += `\n✅ Serveur arrêté.`;
+              } catch (e) {
+                $("#out").textContent += `\n❌ Échec arrêt: ${(e.message||e)}`;
+              }
+            }
+          } catch {
+            // ignore
+          }
+        }, 600);
+      }
+
+      // Optionnel : log en console pour debug
+      console.log("Opened", { url, target, ephemeral });
+    } catch (e) {
+      $("#out").textContent = "❌ " + (e.message || e);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  // --- Action du bouton Explorer : ouvrir la page explorer.html
+  $("#openExplorer").addEventListener("click", () => {
+    // On enregistre l'état courant dans l'objet (optionnel), puis on navigue.
+    syncSelectedFromInputs();
+    location.href = "explorer.html";
+  });
+</script>
