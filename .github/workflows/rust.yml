@@ -1,4 +1,3 @@
-# .github/workflows/tauri-windows.yml
 name: Build (Windows, signed in CI)
 
 on:
@@ -15,9 +14,10 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node (pour front éventuel)
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
@@ -25,24 +25,51 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Generate icons (idempotent)
+      # Installe la CLI Tauri (nécessaire pour `cargo tauri ...`)
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --locked --version ^1.6
+
+      # Dépendances bundling Windows (NSIS pour .exe, WiX pour .msi)
+      - name: Install NSIS & WiX
+        shell: pwsh
+        run: |
+          choco install nsis -y
+          choco install wix -y
+
+      # (Optionnel) Build front si package.json existe à la racine
+      - name: Install frontend deps
+        if: hashFiles('package.json') != ''
+        run: |
+          npm ci
+          npm run build --if-present
+
+      # Génère les icônes à partir de src-tauri/icon.png (idempotent)
+      - name: Generate icons
         run: cargo tauri icon src-tauri/icon.png
 
-      # Secrets requis: WINDOWS_CERTIFICATE (PFX en base64) et WINDOWS_CERTIFICATE_PASSWORD
+      # Import du certificat et exposition du Thumbprint en variable d'env
+      # Secrets requis :
+      #   - WINDOWS_CERTIFICATE : votre PFX encodé en base64
+      #   - WINDOWS_CERTIFICATE_PASSWORD : mot de passe du PFX
       - name: Import code signing certificate
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
+          if (-not $env:WINDOWS_CERTIFICATE -or -not $env:WINDOWS_CERTIFICATE_PASSWORD) {
+            Write-Host "No signing secrets provided; build will proceed unsigned."
+            "WINDOWS_CERTIFICATE_THUMBPRINT=" | Out-File -FilePath $env:GITHUB_ENV -Append
+            exit 0
+          }
           New-Item -ItemType Directory -Force -Path certificate | Out-Null
           Set-Content certificate\cert.b64 $env:WINDOWS_CERTIFICATE
           certutil -decode certificate\cert.b64 certificate\codesign.pfx | Out-Null
           $pw = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
           $cert = Import-PfxCertificate -FilePath certificate\codesign.pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pw
-          # Expose thumbprint pour Tauri
           "WINDOWS_CERTIFICATE_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+      # Build Tauri avec la config CI (active la signature)
       - name: Build & Sign (CI config)
         uses: tauri-apps/tauri-action@v0
         env:
@@ -51,8 +78,11 @@ jobs:
         with:
           args: --config src-tauri/tauri.ci.json
 
+      # Artefacts (exe/msi/nsis, logs)
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: tauri-windows-bundles
-          path: src-tauri/target/release/bundle/**
+          path: |
+            src-tauri/target/release/bundle/**
+            src-tauri/target/release/*.log
