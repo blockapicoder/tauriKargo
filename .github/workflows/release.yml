@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch: {}
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -78,19 +78,19 @@ jobs:
         shell: pwsh
         run: |
           $exe = Get-ChildItem src-tauri/target/release -Filter TauriKargo*.exe -Recurse | Select-Object -First 1
-          if (-not $exe) { Write-Error "Aucun EXE trouvé après build." }
+          if (-not $exe) { Write-Error "No EXE found after build." }
           $toml = Get-Content src-tauri\Cargo.toml -Raw
           if ($toml -match '(?m)^\s*version\s*=\s*"([^"]+)"') { $v = $Matches[1] } else { $v = "0.0.0" }
           $short = "${{ github.sha }}".Substring(0,7)
           $asset = "TauriKargo-$v-$short-windows-x64.exe"
           Copy-Item $exe.FullName $asset -Force
           $sha256 = (Get-FileHash $asset -Algorithm SHA256).Hash
-          "asset=$asset"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "asset=$asset" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "sha256=$sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "version=$v"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "short=$short"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "short=$short" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      - name: Create/Update Release
+      - name: Create or update Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
@@ -98,8 +98,7 @@ jobs:
           make_latest: true
           prerelease: true
           draft: false
-          files: |
-            ${{ steps.prep.outputs.asset }}
+          files: ${{ steps.prep.outputs.asset }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -110,16 +109,15 @@ jobs:
           $sha="${{ steps.prep.outputs.sha256 }}"
           $v="${{ steps.prep.outputs.version }}"
           $short="${{ steps.prep.outputs.short }}"
-          Add-Content $env:GITHUB_STEP_SUMMARY "# Build Windows (cache + signature si secrets)"
-          Add-Content $env:GITHUB_STEP_SUMMARY "Version : $v (`${{ github.ref_name }}` @ $short)"
-          Add-Content $env:GITHUB_STEP_SUMMARY "Fichier : $asset"
-          Add-Content $env:GITHUB_STEP_SUMMARY "SHA256  : `$sha`"
-          Add-Content $env:GITHUB_STEP_SUMMARY ""
-          Add-Content $env:GITHUB_STEP_SUMMARY "👉 Téléchargez depuis **Releases → Latest signed build** (lien permanent)."
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "# Build Windows (cache + signature si secrets)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("Version : {0} (`{1}` @ {2})" -f $v, "${{ github.ref_name }}", $short)
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("Fichier : {0}" -f $asset)
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("SHA256  : `{0}`" -f $sha)
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Telechargez depuis Releases -> Latest signed build (lien permanent)."
 
       - name: Upload artifact (optional)
         uses: actions/upload-artifact@v4
         with:
           name: tauri-windows-exe
-          path: |
-            ${{ steps.prep.outputs.asset }}
+          path: ${{ steps.prep.outputs.asset }}
