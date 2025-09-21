@@ -1,27 +1,31 @@
-name: Sign Windows EXE (manual)
+name: Sign Windows EXE (manual by run_id)
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run ID du build qui a publié l'artefact"
+        required: true
+      artifact_name:
+        description: "Nom exact de l'artefact à signer"
+        required: true
+        default: "tauri-windows-exe"
 
 permissions:
+  actions: read     # <— IMPORTANT pour lire les artefacts d'autres runs
   contents: read
 
 jobs:
   sign:
     runs-on: windows-latest
     steps:
-      # Télécharge le DERNIER artefact nommé "tauri-windows-exe" (peu importe le workflow)
       - name: Download unsigned artifact
         uses: dawidd6/action-download-artifact@v3
         with:
-          name: tauri-windows-exe
-          search_artifacts: true
-          workflow_conclusion: success
+          run_id: ${{ inputs.run_id }}
+          name: ${{ inputs.artifact_name }}
           if_no_artifact_found: fail
-          # optionnel: limite à main
-          branch: main
 
-      # Secrets requis pour signer
       - name: Check secrets
         shell: pwsh
         run: |
