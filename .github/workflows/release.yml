@@ -107,12 +107,14 @@ jobs:
           $zip="${{ steps.prep.outputs.zip }}"
           $sha="${{ steps.prep.outputs.sha256 }}"
           $v="${{ steps.prep.outputs.version }}"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "# Build Windows (cache + signature si secrets)"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("Version : {0}" -f $v)
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("Fichier ZIP : {0}" -f $zip)
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("SHA256 ZIP : `{0}`" -f $sha)
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Telechargez depuis Releases -> Latest signed build (lien permanent)."
+          $lines = @()
+          $lines += "# Build Windows (cache + signature si secrets)"
+          $lines += ("Version : {0}" -f $v)
+          $lines += ("Fichier ZIP : {0}" -f $zip)
+          $lines += ("SHA256 ZIP : `{0}`" -f $sha)
+          $lines += ""
+          $lines += "Telechargez depuis Releases -> Latest signed build (lien permanent)."
+          $lines | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
 
       - name: Upload artifact (optional)
         uses: actions/upload-artifact@v4
