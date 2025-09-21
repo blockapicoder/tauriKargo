@@ -1,4 +1,4 @@
-name: Sign Windows EXE (manual by run_id)
+name: Sign Windows EXE (by run_id)
 
 on:
   workflow_dispatch:
@@ -12,21 +12,21 @@ on:
         default: "tauri-windows-exe"
 
 permissions:
-  actions: read     # <— IMPORTANT pour lire les artefacts d'autres runs
+  actions: read
   contents: read
 
 jobs:
   sign:
     runs-on: windows-latest
     steps:
-      - name: Download unsigned artifact
+      - name: Download artifact from run
         uses: dawidd6/action-download-artifact@v3
         with:
           run_id: ${{ inputs.run_id }}
           name: ${{ inputs.artifact_name }}
           if_no_artifact_found: fail
 
-      - name: Check secrets
+      - name: Require signing secrets
         shell: pwsh
         run: |
           if (-not "${{ secrets.WINDOWS_CERTIFICATE }}" -or -not "${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}") {
@@ -42,12 +42,25 @@ jobs:
           Set-Content certificate\cert.b64 $env:WINDOWS_CERTIFICATE
           certutil -decode certificate\cert.b64 certificate\codesign.pfx | Out-Null
 
-      - name: Find EXE to sign
+      - name: Resolve signtool.exe
+        shell: pwsh
+        run: |
+          $st = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $st) {
+            choco install windows-sdk-10-version-10.0.22621.0 -y
+            $st = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+              Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $st) { Write-Error "signtool.exe introuvable." }
+          "SIGNTOOL=$st" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Locate EXE to sign
         id: findexe
         shell: pwsh
         run: |
           $exe = Get-ChildItem -Path . -Filter TauriKargo*.exe -Recurse | Select-Object -First 1
-          if (-not $exe) { Write-Error "Aucun exe trouvé dans l'artefact téléchargé." }
+          if (-not $exe) { Write-Error "Aucun .exe 'TauriKargo*.exe' trouvé dans l'artefact téléchargé." }
           "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "EXE => $($exe.FullName)"
 
@@ -57,7 +70,14 @@ jobs:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           $exe = "${{ steps.findexe.outputs.exe }}"
-          & signtool.exe sign /fd sha256 /f certificate\codesign.pfx /p "$env:WINDOWS_CERTIFICATE_PASSWORD" /tr http://timestamp.digicert.com /td sha256 /d "TauriKargo" "$exe"
+          & "$env:SIGNTOOL" sign `
+            /fd sha256 `
+            /f certificate\codesign.pfx `
+            /p "$env:WINDOWS_CERTIFICATE_PASSWORD" `
+            /tr http://timestamp.digicert.com `
+            /td sha256 `
+            /d "TauriKargo" `
+            "$exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify signature
