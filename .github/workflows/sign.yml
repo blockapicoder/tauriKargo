@@ -18,6 +18,10 @@ on:
         description: "Nom de la release"
         required: false
         default: "Latest signed build"
+      allow_self_signed:
+        description: "Faire confiance au certificat auto-signé sur le runner (pour la vérification uniquement)"
+        required: false
+        default: "false"
 
 permissions:
   actions: read
@@ -71,13 +75,12 @@ jobs:
           if (-not $exe) { Write-Error "Aucun .exe 'TauriKargo*.exe' trouvé." }
           $zip = Get-ChildItem -Path . -Filter TauriKargo*-windows-*.zip -Recurse | Select-Object -First 1
           if (-not $zip) { Write-Error "Aucun ZIP 'TauriKargo*-windows-*.zip' trouvé." }
-
           "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "zip=$($zip.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "EXE => $($exe.FullName)"
           Write-Host "ZIP => $($zip.FullName)"
 
-      - name: Sign EXE
+      - name: Sign EXE (RFC3161 timestamp)
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
@@ -87,11 +90,31 @@ jobs:
             /fd sha256 `
             /f certificate\codesign.pfx `
             /p "$env:WINDOWS_CERTIFICATE_PASSWORD" `
-            /tr http://timestamp.digicert.com `
+            /tr https://timestamp.digicert.com `
             /td sha256 `
             /d "TauriKargo" `
             "$exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: (Optional) Trust self-signed cert on runner for verification
+        if: ${{ inputs.allow_self_signed == 'true' }}
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          # Charge le PFX et exporte le .cer public
+          $pfxPath = "certificate\codesign.pfx"
+          $pwd = (ConvertTo-SecureString -AsPlainText "$env:WINDOWS_CERTIFICATE_PASSWORD" -Force)
+          $x509 = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($pfxPath, $pwd)
+          if ($x509.Subject -eq $x509.Issuer) {
+            $cerBytes = $x509.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
+            [IO.File]::WriteAllBytes("certificate\codesign.cer", $cerBytes)
+            Import-Certificate -FilePath "certificate\codesign.cer" -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
+            Import-Certificate -FilePath "certificate\codesign.cer" -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
+            Write-Host "✅ Certificat auto-signé approuvé localement (runner) pour la vérification."
+          } else {
+            Write-Host "Cert émis par une AC (non auto-signé) : pas d'import local nécessaire."
+          }
 
       - name: Verify signature
         shell: pwsh
@@ -99,7 +122,13 @@ jobs:
           $exe = "${{ steps.find.outputs.exe }}"
           $sig = Get-AuthenticodeSignature "$exe"
           $sig | Format-List Status,StatusMessage,SignerCertificate
-          if ($sig.Status -ne 'Valid') { Write-Error "Signature invalid: $($sig.Status)" }
+          if ($sig.Status -ne 'Valid') {
+            if ("${{ inputs.allow_self_signed }}" -eq "true" -and $sig.Status -eq 'UnknownError') {
+              Write-Warning "Signature non approuvée globalement (auto-signé) mais acceptée pour ce job."
+            } else {
+              Write-Error "Signature invalid: $($sig.Status)"
+            }
+          }
 
       - name: Rebuild ZIP with signed EXE (same name)
         id: rezip
@@ -107,15 +136,11 @@ jobs:
         run: |
           $exe = "${{ steps.find.outputs.exe }}"
           $zip = "${{ steps.find.outputs.zip }}"
-          $tmp = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
-          New-Item -ItemType Directory -Path $tmp | Out-Null
-
-          # si le zip d'origine ne contient que l'exe, on peut juste le remplacer
           Remove-Item $zip -Force
           Compress-Archive -Path $exe -DestinationPath $zip
-
           $sha256 = (Get-FileHash $zip -Algorithm SHA256).Hash
           "zip_sha256=$sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "ZIP SHA256: $sha256"
 
       - name: Upload signed exe (artifact)
         uses: actions/upload-artifact@v4
@@ -152,4 +177,5 @@ jobs:
             "ZIP : ${{ steps.find.outputs.zip }}"
             "ZIP SHA256 : ${{ steps.rezip.outputs.zip_sha256 }}"
             "Tag : ${{ inputs.tag_name }}"
+            "allow_self_signed : ${{ inputs.allow_self_signed }}"
           ) | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
