@@ -795,7 +795,7 @@ async fn api_run(
         );
     }
 
-    let work_dir = { state.root.read().await.clone() };
+    let work_dir = { state.file_path.read().await.clone() };
     let exec_root = { state.exec_root.read().await.clone() };
     let mut exe_path = exec_root.join(name);
     if !exe_path.exists() && cfg!(windows) {

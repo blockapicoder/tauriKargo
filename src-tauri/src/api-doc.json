@@ -1,0 +1,267 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "TauriKargo API",
+    "version": "1.0.0",
+    "description": "Documentation de l'API exposée par main.rs (serveur Axum/Tauri)"
+  },
+  "paths": {
+    "/api/embed": {
+      "post": {
+        "summary": "Embed deux dossiers dans un exécutable",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": { "type": "string" },
+                  "executable": { "type": "string" },
+                  "output": { "type": "string" }
+                },
+                "required": ["output"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Succès" },
+          "400": { "description": "Paramètre manquant ou dossier invalide" },
+          "500": { "description": "Erreur interne" }
+        }
+      }
+    },
+    "/api/useConfig": {
+      "post": {
+        "summary": "Définit les dossiers code et exécutable à utiliser",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": { "type": "string" },
+                  "executable": { "type": "string" }
+                },
+                "required": ["code", "executable"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Configuration appliquée" },
+          "400": { "description": "Dossier invalide" }
+        }
+      }
+    },
+    "/api/get-config": {
+      "get": {
+        "summary": "Retourne la configuration courante (dossiers)",
+        "responses": {
+          "200": { "description": "Configuration courante" }
+        }
+      }
+    },
+    "/api/current-directory": {
+      "post": {
+        "summary": "Change le répertoire courant pour les opérations de fichiers",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "path": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Répertoire mis à jour" },
+          "400": { "description": "Chemin invalide" },
+          "404": { "description": "Introuvable" }
+        }
+      }
+    },
+    "/api/file/{file}": {
+      "post": {
+        "summary": "Lecture ou écriture de fichier (body vide = lecture)",
+        "parameters": [
+          {
+            "name": "file",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/octet-stream": {},
+            "text/plain": {}
+          }
+        },
+        "responses": {
+          "200": { "description": "Fichier lu ou écrit" },
+          "400": { "description": "Chemin ou encodage invalide" },
+          "404": { "description": "Fichier introuvable" },
+          "500": { "description": "Erreur interne" }
+        }
+      }
+    },
+    "/api/run": {
+      "post": {
+        "summary": "Lance un exécutable avec arguments",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "executableName": { "type": "string" },
+                  "arguments": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["executableName"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Processus lancé" },
+          "404": { "description": "Exécutable introuvable" },
+          "500": { "description": "Erreur de lancement" }
+        }
+      }
+    },
+    "/api/run/status": {
+      "post": {
+        "summary": "Statut d'un processus lancé",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "integer" }
+                },
+                "required": ["id"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Statut du processus" },
+          "404": { "description": "id inconnu" }
+        }
+      }
+    },
+    "/api/run/stop": {
+      "post": {
+        "summary": "Arrête un processus lancé",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "integer" }
+                },
+                "required": ["id"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Processus arrêté" },
+          "404": { "description": "id inconnu" }
+        }
+      }
+    },
+    "/api/run/stopAll": {
+      "post": {
+        "summary": "Arrête tous les processus lancés",
+        "responses": {
+          "200": { "description": "Tous les processus arrêtés" }
+        }
+      }
+    },
+    "/api/explorer": {
+      "post": {
+        "summary": "Explore un répertoire ou fichier",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "path": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Contenu du répertoire ou fichier" },
+          "404": { "description": "Introuvable" },
+          "500": { "description": "Erreur interne" }
+        }
+      }
+    },
+    "/api/newServer": {
+      "post": {
+        "summary": "Lance un nouveau serveur enfant sur un port donné",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": { "type": "string" },
+                  "executable": { "type": "string" },
+                  "port": { "type": "integer" }
+                },
+                "required": ["code", "executable"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Serveur lancé" },
+          "400": { "description": "Dossier invalide" },
+          "500": { "description": "Erreur interne" }
+        }
+      }
+    },
+    "/api/stop": {
+      "post": {
+        "summary": "Arrête un serveur enfant (par port)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "port": { "type": "integer" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Serveur arrêté" },
+          "404": { "description": "Serveur inconnu" }
+        }
+      }
+    }
+  }
+}
