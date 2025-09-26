@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Documentation OpenAPI</title>
+    <meta name="description" content="Affiche api-doc.json (OpenAPI) avec Redoc" />
+    <style>
+      html,body{height:100%;margin:0}
+      body{font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";}
+      #loading{padding:16px}
+      .topbar{position:fixed;inset:0 0 auto 0;height:48px;display:flex;align-items:center;gap:12px;padding:0 12px;border-bottom:1px solid #e5e7eb;background:#fff;z-index:10}
+      .topbar h1{font-size:16px;margin:0;font-weight:600}
+      .topbar small{color:#6b7280}
+      .container{position:absolute;inset:48px 0 0 0;}
+      .btn{appearance:none;border:1px solid #d1d5db;border-radius:8px;padding:6px 10px;background:#fff;cursor:pointer}
+      .btn:active{transform:translateY(1px)}
+      @media (prefers-color-scheme: dark){
+        body{background:#0b1020;color:#e5e7eb}
+        .topbar{background:#0b1020;border-bottom-color:#1f2937}
+        .btn{background:#0b1020;color:#e5e7eb;border-color:#374151}
+      }
+    </style>
+  </head>
+  <body>
+    <div class="topbar">
+      <h1>Documentation API</h1>
+      <small>Source : <code>./api-doc.json</code></small>
+      <button id="reload" class="btn" title="Recharger la spécification">Recharger</button>
+    </div>
+
+    <div class="container">
+      <div id="loading">Chargement de la doc depuis <code>api-doc.json</code>…</div>
+      <!-- Redoc rendra la documentation ici -->
+      <redoc id="redoc" spec-url="api-doc.json" lazy-rendering></redoc>
+    </div>
+
+    <!-- Redoc (affichage soigné, lecture confortable) -->
+    <script src="https://cdn.jsdelivr.net/npm/redoc@next/bundles/redoc.standalone.js"></script>
+    <script>
+      async function probe(){
+        const loading = document.getElementById('loading');
+        try {
+          const res = await fetch('api-doc.json', {cache:'no-store'});
+          if (!res.ok) throw new Error('HTTP '+res.status);
+          loading.style.display = 'none';
+        } catch (e) {
+          loading.innerHTML = '⚠️ Impossible de charger <code>api-doc.json</code>.<br>Vérifiez que le fichier est au même niveau que cette page et qu\'il est accessible.';
+        }
+      }
+      document.getElementById('reload').addEventListener('click', ()=>location.reload());
+      probe();
+    </script>
+
+    <!-- Alternative Swagger UI (interactif, try-it) — décommentez pour l\'utiliser à la place de Redoc
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+    <script>
+      // Pour utiliser Swagger UI, cachez Redoc et montez SwaggerUIBundle
+      // document.getElementById('redoc').style.display = 'none';
+      // const ui = SwaggerUIBundle({ url: 'api-doc.json', dom_id: '.container' });
+    </script>
+    -->
+  </body>
+</html>
