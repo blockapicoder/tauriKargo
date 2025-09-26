@@ -10,10 +10,18 @@ on:
         description: "Nom exact de l'artefact à signer"
         required: true
         default: "tauri-windows-exe"
+      tag_name:
+        description: "Tag de release (ex: v1.2.3)"
+        required: false
+        default: latest
+      release_name:
+        description: "Nom de la release"
+        required: false
+        default: "Latest signed build"
 
 permissions:
   actions: read
-  contents: read
+  contents: write
 
 jobs:
   sign:
@@ -55,21 +63,26 @@ jobs:
           if (-not $st) { Write-Error "signtool.exe introuvable." }
           "SIGNTOOL=$st" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Locate EXE to sign
-        id: findexe
+      - name: Locate EXE and ZIP
+        id: find
         shell: pwsh
         run: |
           $exe = Get-ChildItem -Path . -Filter TauriKargo*.exe -Recurse | Select-Object -First 1
-          if (-not $exe) { Write-Error "Aucun .exe 'TauriKargo*.exe' trouvé dans l'artefact téléchargé." }
+          if (-not $exe) { Write-Error "Aucun .exe 'TauriKargo*.exe' trouvé." }
+          $zip = Get-ChildItem -Path . -Filter TauriKargo*-windows-*.zip -Recurse | Select-Object -First 1
+          if (-not $zip) { Write-Error "Aucun ZIP 'TauriKargo*-windows-*.zip' trouvé." }
+
           "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "zip=$($zip.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "EXE => $($exe.FullName)"
+          Write-Host "ZIP => $($zip.FullName)"
 
       - name: Sign EXE
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
-          $exe = "${{ steps.findexe.outputs.exe }}"
+          $exe = "${{ steps.find.outputs.exe }}"
           & "$env:SIGNTOOL" sign `
             /fd sha256 `
             /f certificate\codesign.pfx `
@@ -83,11 +96,60 @@ jobs:
       - name: Verify signature
         shell: pwsh
         run: |
-          $exe = "${{ steps.findexe.outputs.exe }}"
-          Get-AuthenticodeSignature "$exe" | Format-List Status,StatusMessage,SignerCertificate
+          $exe = "${{ steps.find.outputs.exe }}"
+          $sig = Get-AuthenticodeSignature "$exe"
+          $sig | Format-List Status,StatusMessage,SignerCertificate
+          if ($sig.Status -ne 'Valid') { Write-Error "Signature invalid: $($sig.Status)" }
 
-      - name: Upload signed exe
+      - name: Rebuild ZIP with signed EXE (same name)
+        id: rezip
+        shell: pwsh
+        run: |
+          $exe = "${{ steps.find.outputs.exe }}"
+          $zip = "${{ steps.find.outputs.zip }}"
+          $tmp = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
+          New-Item -ItemType Directory -Path $tmp | Out-Null
+
+          # si le zip d'origine ne contient que l'exe, on peut juste le remplacer
+          Remove-Item $zip -Force
+          Compress-Archive -Path $exe -DestinationPath $zip
+
+          $sha256 = (Get-FileHash $zip -Algorithm SHA256).Hash
+          "zip_sha256=$sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Upload signed exe (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: signed-exe
-          path: ${{ steps.findexe.outputs.exe }}
+          path: ${{ steps.find.outputs.exe }}
+
+      - name: Upload signed zip (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-zip
+          path: ${{ steps.find.outputs.zip }}
+
+      - name: Create / Update Pre-release with ZIP + EXE
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name }}
+          name: ${{ inputs.release_name }}
+          prerelease: true
+          make_latest: true
+          draft: false
+          files: |
+            ${{ steps.find.outputs.zip }}
+            ${{ steps.find.outputs.exe }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        shell: pwsh
+        run: |
+          @(
+            "# Signing & Release summary"
+            "EXE : ${{ steps.find.outputs.exe }}"
+            "ZIP : ${{ steps.find.outputs.zip }}"
+            "ZIP SHA256 : ${{ steps.rezip.outputs.zip_sha256 }}"
+            "Tag : ${{ inputs.tag_name }}"
+          ) | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
