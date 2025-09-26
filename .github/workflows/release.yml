@@ -51,7 +51,7 @@ jobs:
       - name: Prepare code signing (optional)
         shell: pwsh
         env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}               # base64 du .pfx
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           if ($env:WINDOWS_CERTIFICATE -and $env:WINDOWS_CERTIFICATE_PASSWORD) {
@@ -59,19 +59,33 @@ jobs:
             Set-Content certificate\cert.b64 $env:WINDOWS_CERTIFICATE
             certutil -decode certificate\cert.b64 certificate\codesign.pfx | Out-Null
             "TAURI_WIN_CERT_PATH=$(Resolve-Path certificate\codesign.pfx)" | Out-File -FilePath $env:GITHUB_ENV -Append
-            "TAURI_WIN_CERT_PASS=$($env:WINDOWS_CERTIFICATE_PASSWORD)" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "TAURI_WIN_CERT_PASSWORD=$($env:WINDOWS_CERTIFICATE_PASSWORD)" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "TAURI_SIGNING_TIMESTAMP_URL=http://timestamp.digicert.com" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "TAURI_SIGNING_CERTIFICATE_DESCRIPTION=TauriKargo" | Out-File -FilePath $env:GITHUB_ENV -Append
           }
 
-      - name: Build portable EXE
+      - name: Build portable EXE (signed if secrets present)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_WIN_CERT_PATH: ${{ env.TAURI_WIN_CERT_PATH }}
-          TAURI_WIN_CERT_PASS: ${{ env.TAURI_WIN_CERT_PASS }}
+          TAURI_WIN_CERT_PASSWORD: ${{ env.TAURI_WIN_CERT_PASSWORD }}
+          TAURI_SIGNING_TIMESTAMP_URL: ${{ env.TAURI_SIGNING_TIMESTAMP_URL }}
+          TAURI_SIGNING_CERTIFICATE_DESCRIPTION: ${{ env.TAURI_SIGNING_CERTIFICATE_DESCRIPTION }}
           TAURI_BUNDLE_TARGETS: app
         with:
           bundles: app
           args: --config src-tauri/tauri.ci.json
+
+      - name: Verify Authenticode
+        if: env.TAURI_WIN_CERT_PATH != ''
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem src-tauri/target/release -Filter TauriKargo*.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { Write-Error "No EXE found." }
+          $sig = Get-AuthenticodeSignature $exe.FullName
+          $sig | Format-List
+          if ($sig.Status -ne 'Valid') { Write-Error "Signature invalid: $($sig.Status)" }
 
       - name: Prepare release asset (zip + sha256)
         id: prep
@@ -86,18 +100,21 @@ jobs:
           Compress-Archive -Path $exe.FullName -DestinationPath $zip
           $sha256 = (Get-FileHash $zip -Algorithm SHA256).Hash
           "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "sha256=$sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Create or update Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest
-          name: Latest signed build
-          make_latest: true
+          tag_name: v${{ steps.prep.outputs.version }}
+          name: "TauriKargo v${{ steps.prep.outputs.version }} (pre-release)"
           prerelease: true
+          make_latest: true
           draft: false
-          files: ${{ steps.prep.outputs.zip }}
+          files: |
+            ${{ steps.prep.outputs.zip }}
+            ${{ steps.prep.outputs.exe }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -105,17 +122,23 @@ jobs:
         shell: pwsh
         run: |
           $zip="${{ steps.prep.outputs.zip }}"
+          $exe="${{ steps.prep.outputs.exe }}"
           $sha="${{ steps.prep.outputs.sha256 }}"
           $v="${{ steps.prep.outputs.version }}"
-          $lines = @()
-          $lines += "# Build Windows (cache + signature si secrets)"
-          $lines += ("Version : {0}" -f $v)
-          $lines += ("Fichier ZIP : {0}" -f $zip)
-          $lines += ("SHA256 ZIP : {0}" -f $sha)
-          $lines | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          @(
+            "# Build Windows (cache + signing if secrets provided)"
+            "Version : $v"
+            "ZIP : $zip"
+            "EXE : $exe"
+            "SHA256(ZIP) : $sha"
+            ""
+            "Release tag: v$v"
+          ) | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
 
       - name: Upload artifact (optional)
         uses: actions/upload-artifact@v4
         with:
-          name: tauri-windows-zip
-          path: ${{ steps.prep.outputs.zip }}
+          name: tauri-windows
+          path: |
+            ${{ steps.prep.outputs.zip }}
+            ${{ steps.prep.outputs.exe }}
