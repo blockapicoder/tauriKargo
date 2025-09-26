@@ -1,46 +1,79 @@
-name: Build Windows EXE (unsigned) + ZIP
+name: Build Windows EXE (signed) + Release ZIP
 
 on:
-  push: { branches: [main] }
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
-permissions: { contents: write }
+permissions:
+  contents: write
 
 jobs:
-  build:
+  build-windows-exe:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with: { workspaces: "src-tauri -> target" }
-      - uses: mozilla-actions/sccache-action@v0.0.7
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri -> target
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.7
+
       - name: Enable sccache
         shell: pwsh
         run: |
           "RUSTC_WRAPPER=sccache" | Out-File -Append $env:GITHUB_ENV
           "SCCACHE_CACHE_SIZE=2G"  | Out-File -Append $env:GITHUB_ENV
+
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked --version ^1.6
-      - name: Stage web assets
+
+      - name: Stage web assets to ./dist
         shell: pwsh
         run: |
           if (Test-Path dist) { Remove-Item -Recurse -Force dist }
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item src-tauri\assets\* dist -Recurse -Force
           if (-not (Test-Path dist\index.html)) { Write-Error "index.html missing in staged dist" }
-      - run: cargo tauri icon src-tauri/icon.png
+
+      - name: Generate icons (idempotent)
+        run: cargo tauri icon src-tauri/icon.png
+
+      - name: Prepare code signing (optional)
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if ($env:WINDOWS_CERTIFICATE -and $env:WINDOWS_CERTIFICATE_PASSWORD) {
+            New-Item -ItemType Directory -Force certificate | Out-Null
+            Set-Content certificate\cert.b64 $env:WINDOWS_CERTIFICATE
+            certutil -decode certificate\cert.b64 certificate\codesign.pfx | Out-Null
+            "TAURI_WIN_CERT_PATH=$(Resolve-Path certificate\codesign.pfx)" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "TAURI_WIN_CERT_PASS=$($env:WINDOWS_CERTIFICATE_PASSWORD)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          }
 
       - name: Build portable EXE
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_WIN_CERT_PATH: ${{ env.TAURI_WIN_CERT_PATH }}
+          TAURI_WIN_CERT_PASS: ${{ env.TAURI_WIN_CERT_PASS }}
           TAURI_BUNDLE_TARGETS: app
         with:
           bundles: app
           args: --config src-tauri/tauri.ci.json
 
-      - name: Pack ZIP + SHA256
+      - name: Prepare release asset (zip + sha256)
         id: prep
         shell: pwsh
         run: |
@@ -48,32 +81,43 @@ jobs:
           if (-not $exe) { Write-Error "No EXE found after build." }
           $toml = Get-Content src-tauri\Cargo.toml -Raw
           if ($toml -match '(?m)^\s*version\s*=\s*"([^"]+)"') { $v = $Matches[1] } else { $v = "0.0.0" }
-          $zip = "TauriKargo-$v-windows-x64-UNSIGNED.zip"
+          $zip = "TauriKargo-$v-windows-x64.zip"
           if (Test-Path $zip) { Remove-Item $zip -Force }
           Compress-Archive -Path $exe.FullName -DestinationPath $zip
           $sha256 = (Get-FileHash $zip -Algorithm SHA256).Hash
           "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "sha256=$sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      - name: Upload artifact (for signing job)
-        uses: actions/upload-artifact@v4
-        with:
-          name: tauri-windows-exe
-          path: |
-            ${{ steps.prep.outputs.exe }}
-            ${{ steps.prep.outputs.zip }}
-
-      - name: Create/Update pre-release (unsigned assets)
+      - name: Create or update Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.prep.outputs.version }}-unsigned
-          name: "TauriKargo v${{ steps.prep.outputs.version }} (unsigned preview)"
+          tag_name: latest
+          name: Latest signed build
+          make_latest: true
           prerelease: true
-          make_latest: false
           draft: false
-          files: |
-            ${{ steps.prep.outputs.zip }}
+          files: ${{ steps.prep.outputs.zip }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Job summary
+        shell: pwsh
+        run: |
+          $zip="${{ steps.prep.outputs.zip }}"
+          $sha="${{ steps.prep.outputs.sha256 }}"
+          $v="${{ steps.prep.outputs.version }}"
+          $lines = @()
+          $lines += "# Build Windows (cache + signature si secrets)"
+          $lines += ("Version : {0}" -f $v)
+          $lines += ("Fichier ZIP : {0}" -f $zip)
+          $lines += ("SHA256 ZIP : `{0}`" -f $sha)
+          $lines += ""
+          $lines += "Telechargez depuis Releases -> Latest signed build (lien permanent)."
+          $lines | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
+
+      - name: Upload artifact (optional)
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-windows-zip
+          path: ${{ steps.prep.outputs.zip }}
