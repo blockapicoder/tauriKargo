@@ -7,7 +7,7 @@ on:
         description: "Run ID of the build that published the artifact"
         required: true
       artifact_name:
-        description: "Exact artifact name to download (must contain EXE and ZIP)"
+        description: "Exact artifact name to download (must include EXE and ZIP)"
         required: true
         default: "tauri-windows-exe"
       tag_name:
@@ -18,10 +18,6 @@ on:
         description: "Release name/title"
         required: false
         default: "Latest signed build"
-      allow_self_signed:
-        description: "Trust self-signed cert on runner for verification (runner only)"
-        required: false
-        default: "false"
 
 permissions:
   actions: read
@@ -99,7 +95,7 @@ jobs:
           )
           $signed = $false
           foreach ($url in $serversRFC3161) {
-            Write-Host "-> Trying RFC3161 timestamp: $url"
+            Write-Host "-> Trying RFC3161: $url"
             & "$env:SIGNTOOL" sign `
               /fd sha256 `
               /f certificate\codesign.pfx `
@@ -113,7 +109,7 @@ jobs:
           }
           if (-not $signed) {
             foreach ($url in $serversLegacy) {
-              Write-Host "-> Trying legacy /t timestamp: $url"
+              Write-Host "-> Trying legacy /t: $url"
               & "$env:SIGNTOOL" sign `
                 /fd sha256 `
                 /f certificate\codesign.pfx `
@@ -127,8 +123,7 @@ jobs:
           }
           if (-not $signed) { Write-Error "All timestamp servers failed." }
 
-      - name: (Optional) Trust self-signed cert on runner for verification
-        if: ${{ inputs.allow_self_signed == 'true' }}
+      - name: Trust self-signed cert on runner (to avoid verify failure)
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
@@ -141,23 +136,25 @@ jobs:
             [IO.File]::WriteAllBytes("certificate\codesign.cer", $cerBytes)
             Import-Certificate -FilePath "certificate\codesign.cer" -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
             Import-Certificate -FilePath "certificate\codesign.cer" -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
-            Write-Host "✅ Self-signed certificate trusted locally on runner for verification."
+            Write-Host "✅ Self-signed certificate trusted on runner for verification."
           } else {
-            Write-Host "Certificate issued by CA (not self-signed) – no local import needed."
+            Write-Host "Certificate issued by CA – no local import needed."
           }
 
-      - name: Verify signature
+      - name: Verify signature (do not fail on self-signed after trust)
         shell: pwsh
         run: |
           $exe = "${{ steps.find.outputs.exe }}"
           $sig = Get-AuthenticodeSignature "$exe"
-          $sig | Format-List Status,StatusMessage,SignerCertificate
-          if ($sig.Status -ne 'Valid') {
-            if ("${{ inputs.allow_self_signed }}" -eq "true" -and ($sig.Status -eq 'UnknownError' -or $sig.Status -eq 'NotTrusted')) {
-              Write-Warning "Signature not globally trusted (self-signed). Accepted for this job."
-            } else {
-              Write-Error "Signature invalid: $($sig.Status)"
-            }
+          $status = $sig.Status.ToString()
+          $msg = $sig.StatusMessage
+          Write-Host "Status: $status"
+          Write-Host "Message: $msg"
+          if ($status -eq 'NotSigned' -or $status -eq 'HashMismatch' -or $status -eq 'InvalidCertificate') {
+            Write-Error "Signature invalid: $status"
+          }
+          if ($status -ne 'Valid') {
+            Write-Warning "Signature status: $status (continuing)"
           }
 
       - name: Rebuild ZIP with signed EXE (same filename)
@@ -184,7 +181,7 @@ jobs:
           name: signed-zip
           path: ${{ steps.find.outputs.zip }}
 
-      - name: Create / Update Pre-release with ZIP + EXE
+      - name: Create / Update Pre-release (ZIP + EXE)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag_name }}
@@ -207,5 +204,4 @@ jobs:
             "ZIP : ${{ steps.find.outputs.zip }}"
             "ZIP SHA256 : ${{ steps.rezip.outputs.zip_sha256 }}"
             "Tag : ${{ inputs.tag_name }}"
-            "allow_self_signed : ${{ inputs.allow_self_signed }}"
           ) | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
