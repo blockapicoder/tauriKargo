@@ -4,22 +4,22 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: "Run ID du build qui a publié l'artefact"
+        description: "Run ID of the build that published the artifact"
         required: true
       artifact_name:
-        description: "Nom exact de l'artefact à signer"
+        description: "Exact artifact name to download (must contain EXE and ZIP)"
         required: true
         default: "tauri-windows-exe"
       tag_name:
-        description: "Tag de release (ex: v1.2.3)"
+        description: "Release tag (e.g. v1.2.3)"
         required: false
         default: latest
       release_name:
-        description: "Nom de la release"
+        description: "Release name/title"
         required: false
         default: "Latest signed build"
       allow_self_signed:
-        description: "Faire confiance au certificat auto-signé sur le runner (pour la vérification uniquement)"
+        description: "Trust self-signed cert on runner for verification (runner only)"
         required: false
         default: "false"
 
@@ -42,7 +42,7 @@ jobs:
         shell: pwsh
         run: |
           if (-not "${{ secrets.WINDOWS_CERTIFICATE }}" -or -not "${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}") {
-            Write-Error "Secrets manquants: WINDOWS_CERTIFICATE / WINDOWS_CERTIFICATE_PASSWORD"
+            Write-Error "Missing secrets: WINDOWS_CERTIFICATE / WINDOWS_CERTIFICATE_PASSWORD"
           }
 
       - name: Decode PFX
@@ -64,37 +64,68 @@ jobs:
             $st = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
               Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
           }
-          if (-not $st) { Write-Error "signtool.exe introuvable." }
+          if (-not $st) { Write-Error "signtool.exe not found." }
           "SIGNTOOL=$st" | Out-File -FilePath $env:GITHUB_ENV -Append
+          & "$st" sign /? | Select-Object -First 5 | Out-String | Write-Host
 
       - name: Locate EXE and ZIP
         id: find
         shell: pwsh
         run: |
           $exe = Get-ChildItem -Path . -Filter TauriKargo*.exe -Recurse | Select-Object -First 1
-          if (-not $exe) { Write-Error "Aucun .exe 'TauriKargo*.exe' trouvé." }
+          if (-not $exe) { Write-Error "No EXE 'TauriKargo*.exe' found in downloaded artifact." }
           $zip = Get-ChildItem -Path . -Filter TauriKargo*-windows-*.zip -Recurse | Select-Object -First 1
-          if (-not $zip) { Write-Error "Aucun ZIP 'TauriKargo*-windows-*.zip' trouvé." }
+          if (-not $zip) { Write-Error "No ZIP 'TauriKargo*-windows-*.zip' found in downloaded artifact." }
           "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "zip=$($zip.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "EXE => $($exe.FullName)"
           Write-Host "ZIP => $($zip.FullName)"
 
-      - name: Sign EXE (RFC3161 timestamp)
+      - name: Sign EXE (try multiple timestamp servers)
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           $exe = "${{ steps.find.outputs.exe }}"
-          & "$env:SIGNTOOL" sign `
-            /fd sha256 `
-            /f certificate\codesign.pfx `
-            /p "$env:WINDOWS_CERTIFICATE_PASSWORD" `
-            /tr https://timestamp.digicert.com `
-            /td sha256 `
-            /d "TauriKargo" `
-            "$exe"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $serversRFC3161 = @(
+            "http://timestamp.digicert.com",
+            "http://timestamp.sectigo.com/rfc3161",
+            "http://rfc3161timestamp.globalsign.com/advanced"
+          )
+          $serversLegacy = @(
+            "http://timestamp.digicert.com",
+            "http://timestamp.sectigo.com",
+            "http://timestamp.globalsign.com/scripts/timestamp.dll"
+          )
+          $signed = $false
+          foreach ($url in $serversRFC3161) {
+            Write-Host "-> Trying RFC3161 timestamp: $url"
+            & "$env:SIGNTOOL" sign `
+              /fd sha256 `
+              /f certificate\codesign.pfx `
+              /p "$env:WINDOWS_CERTIFICATE_PASSWORD" `
+              /tr $url `
+              /td sha256 `
+              /d "TauriKargo" `
+              "$exe"
+            if ($LASTEXITCODE -eq 0) { $signed = $true; break }
+            Write-Warning "RFC3161 failed with $url (exit $LASTEXITCODE)"
+          }
+          if (-not $signed) {
+            foreach ($url in $serversLegacy) {
+              Write-Host "-> Trying legacy /t timestamp: $url"
+              & "$env:SIGNTOOL" sign `
+                /fd sha256 `
+                /f certificate\codesign.pfx `
+                /p "$env:WINDOWS_CERTIFICATE_PASSWORD" `
+                /t $url `
+                /d "TauriKargo" `
+                "$exe"
+              if ($LASTEXITCODE -eq 0) { $signed = $true; break }
+              Write-Warning "Legacy /t failed with $url (exit $LASTEXITCODE)"
+            }
+          }
+          if (-not $signed) { Write-Error "All timestamp servers failed." }
 
       - name: (Optional) Trust self-signed cert on runner for verification
         if: ${{ inputs.allow_self_signed == 'true' }}
@@ -102,7 +133,6 @@ jobs:
         env:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
-          # Charge le PFX et exporte le .cer public
           $pfxPath = "certificate\codesign.pfx"
           $pwd = (ConvertTo-SecureString -AsPlainText "$env:WINDOWS_CERTIFICATE_PASSWORD" -Force)
           $x509 = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($pfxPath, $pwd)
@@ -111,9 +141,9 @@ jobs:
             [IO.File]::WriteAllBytes("certificate\codesign.cer", $cerBytes)
             Import-Certificate -FilePath "certificate\codesign.cer" -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
             Import-Certificate -FilePath "certificate\codesign.cer" -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
-            Write-Host "✅ Certificat auto-signé approuvé localement (runner) pour la vérification."
+            Write-Host "✅ Self-signed certificate trusted locally on runner for verification."
           } else {
-            Write-Host "Cert émis par une AC (non auto-signé) : pas d'import local nécessaire."
+            Write-Host "Certificate issued by CA (not self-signed) – no local import needed."
           }
 
       - name: Verify signature
@@ -123,14 +153,14 @@ jobs:
           $sig = Get-AuthenticodeSignature "$exe"
           $sig | Format-List Status,StatusMessage,SignerCertificate
           if ($sig.Status -ne 'Valid') {
-            if ("${{ inputs.allow_self_signed }}" -eq "true" -and $sig.Status -eq 'UnknownError') {
-              Write-Warning "Signature non approuvée globalement (auto-signé) mais acceptée pour ce job."
+            if ("${{ inputs.allow_self_signed }}" -eq "true" -and ($sig.Status -eq 'UnknownError' -or $sig.Status -eq 'NotTrusted')) {
+              Write-Warning "Signature not globally trusted (self-signed). Accepted for this job."
             } else {
               Write-Error "Signature invalid: $($sig.Status)"
             }
           }
 
-      - name: Rebuild ZIP with signed EXE (same name)
+      - name: Rebuild ZIP with signed EXE (same filename)
         id: rezip
         shell: pwsh
         run: |
