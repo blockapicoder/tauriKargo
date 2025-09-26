@@ -2,11 +2,9 @@
 
 > 💾 **Downloads**
 >
-> • **Pre-release:** [v0.1.0-rc1](https://github.com/OWNER/REPO/releases/tag/v0.1.0-rc1)
+> • **Pre-release:** [v0.1.0-rc1](https://github.com/blockapicoder/tauriKargo/releases)
 >
-> • **Direct download:** [TauriKargo-0.1.0-rc1-x86_64-windows.exe](https://github.com/OWNER/REPO/releases/download/v0.1.0-rc1/TauriKargo-0.1.0-rc1-x86_64-windows.exe)
->
-> [![Pre-release](https://img.shields.io/github/v/release/OWNER/REPO?include_prereleases\&label=pre-release\&sort=semver)](https://github.com/OWNER/REPO/releases)
+
 
 A portable, self-contained Tauri + Axum utility for bundling a **web UI folder** and an **executable folder** into a single binary, then serving the UI locally with live TypeScript transpile and a small HTTP API for file/process orchestration.
 
