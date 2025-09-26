@@ -1,144 +1,107 @@
-name: Build Windows EXE (signed) + Release ZIP
+name: Sign Windows EXE (by run_id)
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run ID of the build that published the artifact"
+        required: true
+      artifact_name:
+        description: "Artifact name to sign"
+        required: true
+        default: "tauri-windows-exe"
 
 permissions:
+  actions: read
   contents: write
 
 jobs:
-  build-windows-exe:
+  sign:
     runs-on: windows-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+      - name: Download artifact from run
+        uses: dawidd6/action-download-artifact@v3
         with:
-          workspaces: |
-            src-tauri -> target
+          run_id: ${{ inputs.run_id }}
+          name: ${{ inputs.artifact_name }}
+          if_no_artifact_found: fail
 
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.7
-
-      - name: Enable sccache
+      - name: Check signing secrets
         shell: pwsh
         run: |
-          "RUSTC_WRAPPER=sccache" | Out-File -Append $env:GITHUB_ENV
-          "SCCACHE_CACHE_SIZE=2G"  | Out-File -Append $env:GITHUB_ENV
-
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --locked --version ^1.6
-
-      - name: Stage web assets to ./dist
-        shell: pwsh
-        run: |
-          if (Test-Path dist) { Remove-Item -Recurse -Force dist }
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item src-tauri\assets\* dist -Recurse -Force
-          if (-not (Test-Path dist\index.html)) { Write-Error "index.html missing in staged dist" }
-
-      - name: Generate icons (idempotent)
-        run: cargo tauri icon src-tauri/icon.png
-
-      - name: Prepare code signing (optional)
-        shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}               # base64 du .pfx
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-        run: |
-          if ($env:WINDOWS_CERTIFICATE -and $env:WINDOWS_CERTIFICATE_PASSWORD) {
-            New-Item -ItemType Directory -Force certificate | Out-Null
-            Set-Content certificate\cert.b64 $env:WINDOWS_CERTIFICATE
-            certutil -decode certificate\cert.b64 certificate\codesign.pfx | Out-Null
-            "TAURI_WIN_CERT_PATH=$(Resolve-Path certificate\codesign.pfx)" | Out-File -FilePath $env:GITHUB_ENV -Append
-            "TAURI_WIN_CERT_PASSWORD=$($env:WINDOWS_CERTIFICATE_PASSWORD)" | Out-File -FilePath $env:GITHUB_ENV -Append
-            "TAURI_SIGNING_TIMESTAMP_URL=http://timestamp.digicert.com" | Out-File -FilePath $env:GITHUB_ENV -Append
-            "TAURI_SIGNING_CERTIFICATE_DESCRIPTION=TauriKargo" | Out-File -FilePath $env:GITHUB_ENV -Append
+          if (-not "${{ secrets.WINDOWS_CERTIFICATE }}" -or -not "${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}") {
+            Write-Error "Missing WINDOWS_CERTIFICATE / WINDOWS_CERTIFICATE_PASSWORD"
           }
 
-      - name: Build portable EXE (signed if secrets present)
-        uses: tauri-apps/tauri-action@v0
+      - name: Decode PFX
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_WIN_CERT_PATH: ${{ env.TAURI_WIN_CERT_PATH }}
-          TAURI_WIN_CERT_PASSWORD: ${{ env.TAURI_WIN_CERT_PASSWORD }}
-          TAURI_SIGNING_TIMESTAMP_URL: ${{ env.TAURI_SIGNING_TIMESTAMP_URL }}
-          TAURI_SIGNING_CERTIFICATE_DESCRIPTION: ${{ env.TAURI_SIGNING_CERTIFICATE_DESCRIPTION }}
-          TAURI_BUNDLE_TARGETS: app
-        with:
-          bundles: app
-          args: --config src-tauri/tauri.ci.json
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+        run: |
+          New-Item -ItemType Directory -Force certificate | Out-Null
+          Set-Content certificate\cert.b64 $env:WINDOWS_CERTIFICATE
+          certutil -decode certificate\cert.b64 certificate\codesign.pfx | Out-Null
 
-      - name: Verify Authenticode
-        if: env.TAURI_WIN_CERT_PATH != ''
+      - name: Resolve signtool.exe
         shell: pwsh
         run: |
-          $exe = Get-ChildItem src-tauri/target/release -Filter TauriKargo*.exe -Recurse | Select-Object -First 1
-          if (-not $exe) { Write-Error "No EXE found." }
-          $sig = Get-AuthenticodeSignature $exe.FullName
-          $sig | Format-List
+          $st = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $st) {
+            choco install windows-sdk-10-version-10.0.22621.0 -y
+            $st = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+              Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $st) { Write-Error "signtool.exe not found." }
+          "SIGNTOOL=$st" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Locate EXE to sign
+        id: findexe
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path . -Filter TauriKargo*.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { Write-Error "No 'TauriKargo*.exe' found in downloaded artifact." }
+          "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "EXE => $($exe.FullName)"
+
+      - name: Sign EXE (signtool)
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $exe = "${{ steps.findexe.outputs.exe }}"
+          & "$env:SIGNTOOL" sign `
+            /fd sha256 `
+            /f certificate\codesign.pfx `
+            /p "$env:WINDOWS_CERTIFICATE_PASSWORD" `
+            /tr http://timestamp.digicert.com `
+            /td sha256 `
+            /d "TauriKargo" `
+            "$exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify signature
+        shell: pwsh
+        run: |
+          $exe = "${{ steps.findexe.outputs.exe }}"
+          $sig = Get-AuthenticodeSignature "$exe"
+          $sig | Format-List Status,StatusMessage,SignerCertificate
           if ($sig.Status -ne 'Valid') { Write-Error "Signature invalid: $($sig.Status)" }
 
-      - name: Prepare release asset (zip + sha256)
-        id: prep
-        shell: pwsh
-        run: |
-          $exe = Get-ChildItem src-tauri/target/release -Filter TauriKargo*.exe -Recurse | Select-Object -First 1
-          if (-not $exe) { Write-Error "No EXE found after build." }
-          $toml = Get-Content src-tauri\Cargo.toml -Raw
-          if ($toml -match '(?m)^\s*version\s*=\s*"([^"]+)"') { $v = $Matches[1] } else { $v = "0.0.0" }
-          $zip = "TauriKargo-$v-windows-x64.zip"
-          if (Test-Path $zip) { Remove-Item $zip -Force }
-          Compress-Archive -Path $exe.FullName -DestinationPath $zip
-          $sha256 = (Get-FileHash $zip -Algorithm SHA256).Hash
-          "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "sha256=$sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+      - name: Upload signed exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-exe
+          path: ${{ steps.findexe.outputs.exe }}
 
-      - name: Create or update Release
+      - name: Attach to (or create) pre-release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.prep.outputs.version }}
-          name: "TauriKargo v${{ steps.prep.outputs.version }} (pre-release)"
+          tag_name: latest
+          name: "Latest signed build"
           prerelease: true
           make_latest: true
           draft: false
-          files: |
-            ${{ steps.prep.outputs.zip }}
-            ${{ steps.prep.outputs.exe }}
+          files: ${{ steps.findexe.outputs.exe }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Job summary
-        shell: pwsh
-        run: |
-          $zip="${{ steps.prep.outputs.zip }}"
-          $exe="${{ steps.prep.outputs.exe }}"
-          $sha="${{ steps.prep.outputs.sha256 }}"
-          $v="${{ steps.prep.outputs.version }}"
-          @(
-            "# Build Windows (cache + signing if secrets provided)"
-            "Version : $v"
-            "ZIP : $zip"
-            "EXE : $exe"
-            "SHA256(ZIP) : $sha"
-            ""
-            "Release tag: v$v"
-          ) | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
-
-      - name: Upload artifact (optional)
-        uses: actions/upload-artifact@v4
-        with:
-          name: tauri-windows
-          path: |
-            ${{ steps.prep.outputs.zip }}
-            ${{ steps.prep.outputs.exe }}
