@@ -111,7 +111,7 @@ jobs:
           $lines += "# Build Windows (cache + signature si secrets)"
           $lines += ("Version : {0}" -f $v)
           $lines += ("Fichier ZIP : {0}" -f $zip)
-          $lines += ("SHA256 ZIP : `{0}`" -f $sha)
+          $lines += ("SHA256 ZIP : {0}" -f $sha)
           $lines | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
 
       - name: Upload artifact (optional)
