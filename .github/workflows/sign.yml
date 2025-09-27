@@ -4,18 +4,18 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: "Run ID of the build that published the artifact"
+        description: "Run ID du build ayant publié l'artifact"
         required: true
       artifact_name:
-        description: "Exact artifact name to download (must include EXE and ZIP)"
+        description: "Nom exact de l'artifact à télécharger (doit contenir l'EXE)"
         required: true
         default: "tauri-windows-exe"
       tag_name:
-        description: "Release tag (e.g. v1.2.3)"
+        description: "Tag de Release (ex: v1.2.3)"
         required: false
         default: latest
       release_name:
-        description: "Release name/title"
+        description: "Nom/Titre de la Release"
         required: false
         default: "Latest signed build"
 
@@ -27,7 +27,7 @@ jobs:
   sign:
     runs-on: windows-latest
     steps:
-      - name: Download artifact from run
+      - name: Download EXE artifact from run
         uses: dawidd6/action-download-artifact@v3
         with:
           run_id: ${{ inputs.run_id }}
@@ -64,18 +64,18 @@ jobs:
           "SIGNTOOL=$st" | Out-File -FilePath $env:GITHUB_ENV -Append
           & "$st" sign /? | Select-Object -First 5 | Out-String | Write-Host
 
-      - name: Locate EXE and ZIP
+      - name: Locate EXE (only)
         id: find
         shell: pwsh
         run: |
-          $exe = Get-ChildItem -Path . -Filter TauriKargo*.exe -Recurse | Select-Object -First 1
-          if (-not $exe) { Write-Error "No EXE 'TauriKargo*.exe' found in downloaded artifact." }
-          $zip = Get-ChildItem -Path . -Filter TauriKargo*-windows-*.zip -Recurse | Select-Object -First 1
-          if (-not $zip) { Write-Error "No ZIP 'TauriKargo*-windows-*.zip' found in downloaded artifact." }
+          $exe = Get-ChildItem -Path . -Filter *.exe -Recurse | Sort-Object Length -Descending | Select-Object -First 1
+          if (-not $exe) { Write-Error "No .exe found in downloaded artifact." }
+          # Construire un nom de ZIP cohérent à partir du nom de l'EXE
+          $zip = Join-Path $exe.DirectoryName "$($exe.BaseName)-windows-x64.zip"
           "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "zip=$($zip.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "EXE => $($exe.FullName)"
-          Write-Host "ZIP => $($zip.FullName)"
+          Write-Host "ZIP (to create) => $zip"
 
       - name: Sign EXE (try multiple timestamp servers)
         shell: pwsh
@@ -157,17 +157,21 @@ jobs:
             Write-Warning "Signature status: $status (continuing)"
           }
 
-      - name: Rebuild ZIP with signed EXE (same filename)
-        id: rezip
+      - name: Build ZIP from signed EXE
+        id: zip
         shell: pwsh
         run: |
           $exe = "${{ steps.find.outputs.exe }}"
           $zip = "${{ steps.find.outputs.zip }}"
-          Remove-Item $zip -Force
+          if (Test-Path $zip) { Remove-Item $zip -Force }
           Compress-Archive -Path $exe -DestinationPath $zip
-          $sha256 = (Get-FileHash $zip -Algorithm SHA256).Hash
-          "zip_sha256=$sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          Write-Host "ZIP SHA256: $sha256"
+          $sha256_zip = (Get-FileHash $zip -Algorithm SHA256).Hash
+          $sha256_exe = (Get-FileHash $exe -Algorithm SHA256).Hash
+          "zip_sha256=$sha256_zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "exe_sha256=$sha256_exe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "ZIP: $zip"
+          Write-Host "ZIP SHA256: $sha256_zip"
+          Write-Host "EXE SHA256: $sha256_exe"
 
       - name: Upload signed exe (artifact)
         uses: actions/upload-artifact@v4
@@ -201,7 +205,8 @@ jobs:
           @(
             "# Signing & Release summary"
             "EXE : ${{ steps.find.outputs.exe }}"
+            "EXE SHA256 : ${{ steps.zip.outputs.exe_sha256 }}"
             "ZIP : ${{ steps.find.outputs.zip }}"
-            "ZIP SHA256 : ${{ steps.rezip.outputs.zip_sha256 }}"
+            "ZIP SHA256 : ${{ steps.zip.outputs.zip_sha256 }}"
             "Tag : ${{ inputs.tag_name }}"
           ) | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
