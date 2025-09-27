@@ -4,16 +4,24 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: "Run ID du build qui a publié l'artefact"
+        description: "Run ID of the build that published the artifact"
         required: true
       artifact_name:
-        description: "Nom exact de l'artefact à signer"
+        description: "Exact artifact name to download (must include EXE and ZIP)"
         required: true
         default: "tauri-windows-exe"
+      tag_name:
+        description: "Release tag (e.g. v1.2.3)"
+        required: false
+        default: latest
+      release_name:
+        description: "Release name/title"
+        required: false
+        default: "Latest signed build"
 
 permissions:
   actions: read
-  contents: read
+  contents: write
 
 jobs:
   sign:
@@ -30,7 +38,7 @@ jobs:
         shell: pwsh
         run: |
           if (-not "${{ secrets.WINDOWS_CERTIFICATE }}" -or -not "${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}") {
-            Write-Error "Secrets manquants: WINDOWS_CERTIFICATE / WINDOWS_CERTIFICATE_PASSWORD"
+            Write-Error "Missing secrets: WINDOWS_CERTIFICATE / WINDOWS_CERTIFICATE_PASSWORD"
           }
 
       - name: Decode PFX
@@ -52,42 +60,148 @@ jobs:
             $st = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
               Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
           }
-          if (-not $st) { Write-Error "signtool.exe introuvable." }
+          if (-not $st) { Write-Error "signtool.exe not found." }
           "SIGNTOOL=$st" | Out-File -FilePath $env:GITHUB_ENV -Append
+          & "$st" sign /? | Select-Object -First 5 | Out-String | Write-Host
 
-      - name: Locate EXE to sign
-        id: findexe
+      - name: Locate EXE and ZIP
+        id: find
         shell: pwsh
         run: |
           $exe = Get-ChildItem -Path . -Filter TauriKargo*.exe -Recurse | Select-Object -First 1
-          if (-not $exe) { Write-Error "Aucun .exe 'TauriKargo*.exe' trouvé dans l'artefact téléchargé." }
+          if (-not $exe) { Write-Error "No EXE 'TauriKargo*.exe' found in downloaded artifact." }
+          $zip = Get-ChildItem -Path . -Filter TauriKargo*-windows-*.zip -Recurse | Select-Object -First 1
+          if (-not $zip) { Write-Error "No ZIP 'TauriKargo*-windows-*.zip' found in downloaded artifact." }
           "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "zip=$($zip.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "EXE => $($exe.FullName)"
+          Write-Host "ZIP => $($zip.FullName)"
 
-      - name: Sign EXE
+      - name: Sign EXE (try multiple timestamp servers)
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
-          $exe = "${{ steps.findexe.outputs.exe }}"
-          & "$env:SIGNTOOL" sign `
-            /fd sha256 `
-            /f certificate\codesign.pfx `
-            /p "$env:WINDOWS_CERTIFICATE_PASSWORD" `
-            /tr http://timestamp.digicert.com `
-            /td sha256 `
-            /d "TauriKargo" `
-            "$exe"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $exe = "${{ steps.find.outputs.exe }}"
+          $serversRFC3161 = @(
+            "http://timestamp.digicert.com",
+            "http://timestamp.sectigo.com/rfc3161",
+            "http://rfc3161timestamp.globalsign.com/advanced"
+          )
+          $serversLegacy = @(
+            "http://timestamp.digicert.com",
+            "http://timestamp.sectigo.com",
+            "http://timestamp.globalsign.com/scripts/timestamp.dll"
+          )
+          $signed = $false
+          foreach ($url in $serversRFC3161) {
+            Write-Host "-> Trying RFC3161: $url"
+            & "$env:SIGNTOOL" sign `
+              /fd sha256 `
+              /f certificate\codesign.pfx `
+              /p "$env:WINDOWS_CERTIFICATE_PASSWORD" `
+              /tr $url `
+              /td sha256 `
+              /d "TauriKargo" `
+              "$exe"
+            if ($LASTEXITCODE -eq 0) { $signed = $true; break }
+            Write-Warning "RFC3161 failed with $url (exit $LASTEXITCODE)"
+          }
+          if (-not $signed) {
+            foreach ($url in $serversLegacy) {
+              Write-Host "-> Trying legacy /t: $url"
+              & "$env:SIGNTOOL" sign `
+                /fd sha256 `
+                /f certificate\codesign.pfx `
+                /p "$env:WINDOWS_CERTIFICATE_PASSWORD" `
+                /t $url `
+                /d "TauriKargo" `
+                "$exe"
+              if ($LASTEXITCODE -eq 0) { $signed = $true; break }
+              Write-Warning "Legacy /t failed with $url (exit $LASTEXITCODE)"
+            }
+          }
+          if (-not $signed) { Write-Error "All timestamp servers failed." }
 
-      - name: Verify signature
+      - name: Trust self-signed cert on runner (to avoid verify failure)
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfxPath = "certificate\codesign.pfx"
+          $pwd = (ConvertTo-SecureString -AsPlainText "$env:WINDOWS_CERTIFICATE_PASSWORD" -Force)
+          $x509 = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($pfxPath, $pwd)
+          if ($x509.Subject -eq $x509.Issuer) {
+            $cerBytes = $x509.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
+            [IO.File]::WriteAllBytes("certificate\codesign.cer", $cerBytes)
+            Import-Certificate -FilePath "certificate\codesign.cer" -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
+            Import-Certificate -FilePath "certificate\codesign.cer" -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
+            Write-Host "✅ Self-signed certificate trusted on runner for verification."
+          } else {
+            Write-Host "Certificate issued by CA – no local import needed."
+          }
+
+      - name: Verify signature (do not fail on self-signed after trust)
         shell: pwsh
         run: |
-          $exe = "${{ steps.findexe.outputs.exe }}"
-          Get-AuthenticodeSignature "$exe" | Format-List Status,StatusMessage,SignerCertificate
+          $exe = "${{ steps.find.outputs.exe }}"
+          $sig = Get-AuthenticodeSignature "$exe"
+          $status = $sig.Status.ToString()
+          $msg = $sig.StatusMessage
+          Write-Host "Status: $status"
+          Write-Host "Message: $msg"
+          if ($status -eq 'NotSigned' -or $status -eq 'HashMismatch' -or $status -eq 'InvalidCertificate') {
+            Write-Error "Signature invalid: $status"
+          }
+          if ($status -ne 'Valid') {
+            Write-Warning "Signature status: $status (continuing)"
+          }
 
-      - name: Upload signed exe
+      - name: Rebuild ZIP with signed EXE (same filename)
+        id: rezip
+        shell: pwsh
+        run: |
+          $exe = "${{ steps.find.outputs.exe }}"
+          $zip = "${{ steps.find.outputs.zip }}"
+          Remove-Item $zip -Force
+          Compress-Archive -Path $exe -DestinationPath $zip
+          $sha256 = (Get-FileHash $zip -Algorithm SHA256).Hash
+          "zip_sha256=$sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "ZIP SHA256: $sha256"
+
+      - name: Upload signed exe (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: signed-exe
-          path: ${{ steps.findexe.outputs.exe }}
+          path: ${{ steps.find.outputs.exe }}
+
+      - name: Upload signed zip (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-zip
+          path: ${{ steps.find.outputs.zip }}
+
+      - name: Create / Update Pre-release (ZIP + EXE)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name }}
+          name: ${{ inputs.release_name }}
+          prerelease: true
+          make_latest: true
+          draft: false
+          files: |
+            ${{ steps.find.outputs.zip }}
+            ${{ steps.find.outputs.exe }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        shell: pwsh
+        run: |
+          @(
+            "# Signing & Release summary"
+            "EXE : ${{ steps.find.outputs.exe }}"
+            "ZIP : ${{ steps.find.outputs.zip }}"
+            "ZIP SHA256 : ${{ steps.rezip.outputs.zip_sha256 }}"
+            "Tag : ${{ inputs.tag_name }}"
+          ) | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
