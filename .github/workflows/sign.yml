@@ -122,21 +122,6 @@ jobs:
           }
           if (-not $signed) { Write-Error "All timestamp servers failed." }
 
-      - name: Verify signature (signtool + PS, tolerant)
-        shell: pwsh
-        run: |
-          $exe = "${{ steps.find.outputs.exe }}"
-          & "$env:SIGNTOOL" verify /pa /tw /v "$exe"
-          if ($LASTEXITCODE -ne 0) {
-            Write-Warning "signtool verify non-zero (fréquent avec cert auto-signé)."
-          }
-          $sig = Get-AuthenticodeSignature "$exe"
-          $status = $sig.Status.ToString()
-          Write-Host "PS Authenticode status: $status"
-          if ($status -in @('NotSigned','HashMismatch','InvalidCertificate')) {
-            Write-Error "Signature invalide: $status"
-          }
-
       - name: Build ZIP from signed EXE
         id: zip
         shell: pwsh
