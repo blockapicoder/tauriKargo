@@ -1,16 +1,12 @@
-name: Sign & Release (latest success on main)
+name: Sign & Release (from last success of named workflow)
 
 on:
   workflow_dispatch:
     inputs:
       artifact_name:
-        description: "Nom EXACT de l'artifact contenant l'EXE (côté build)"
+        description: "Nom EXACT de l'artifact (doit contenir l'EXE)"
         required: true
         default: "tauri-windows-exe"
-      build_workflow_file:
-        description: "Nom du fichier du workflow de build (qui produit l'artifact)"
-        required: true
-        default: "build-windows-exe.yml"
 
 permissions:
   actions: read
@@ -21,11 +17,11 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      # 1) Télécharger l'EXE depuis le DERNIER run 'success' sur main
-      - name: Download artifact (latest success on main)
+      # 1) Télécharger l'EXE depuis le DERNIER run 'success' de ce workflow (par NOM) sur main
+      - name: Download artifact (latest success of named workflow on main)
         uses: dawidd6/action-download-artifact@v3
         with:
-          workflow: ${{ inputs.build_workflow_file }}   # ex: build-windows-exe.yml
+          workflow: "Build Windows EXE (signed) + Release ZIP"  # <-- NOM EXACT DU WORKFLOW SOURCE
           branch: main
           workflow_conclusion: success
           check_artifacts: true
@@ -75,7 +71,7 @@ jobs:
           "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "EXE => $($exe.FullName)"
 
-      - name: Sign EXE (timestamp)
+      - name: Sign EXE (timestamp; RFC3161 then /t)
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
@@ -97,15 +93,15 @@ jobs:
           }
           if (-not $ok) { Write-Error "All timestamp servers failed." }
 
-      # 4) Construire release/ (EXE + ZIP)
-      - name: Build release/ (exe + zip, simple)
+      # 4) Construire release/ (EXE + ZIP avec exe dans bin/)
+      - name: Build release/ (exe + zip)
         id: pack
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
           Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-          # Tag & base uniques par CE workflow-run (évite 'latest' et le cache CDN)
+          # Tag & base uniques par CE workflow-run (évite 'latest'/cache CDN)
           $tag  = "sign-${{ github.run_id }}"
           $base = "TauriKargo-${{ github.run_id }}"
           $title= "Signed build (sign run ${{ github.run_id }})"
@@ -138,7 +134,7 @@ jobs:
           "title=$title"| Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "base=$base" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      # 5) Artifacts (onglet Actions) – optionnel mais utile
+      # 5) Artifacts (onglet Actions)
       - name: Upload signed exe (artifact)
         uses: actions/upload-artifact@v4
         with:
