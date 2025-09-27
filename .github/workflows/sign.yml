@@ -1,4 +1,4 @@
-name: Sign Windows EXE (by run_id -> versioned Release)
+name: Sign & Release (from run_id)
 
 on:
   workflow_dispatch:
@@ -10,13 +10,6 @@ on:
         description: "Nom exact de l'artifact contenant l'EXE"
         required: true
         default: "tauri-windows-exe"
-      version:
-        description: "Version (ex: 1.2.3)"
-        required: true
-      release_name:
-        description: "Titre de la Release"
-        required: false
-        default: "Signed build"
 
 permissions:
   actions: read
@@ -45,6 +38,7 @@ jobs:
         env:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
         run: |
+          $ErrorActionPreference='Stop'
           New-Item -ItemType Directory -Force certificate | Out-Null
           Set-Content certificate\cert.b64 $env:WINDOWS_CERTIFICATE
           certutil -decode certificate\cert.b64 certificate\codesign.pfx | Out-Null
@@ -52,6 +46,7 @@ jobs:
       - name: Resolve signtool.exe
         shell: pwsh
         run: |
+          $ErrorActionPreference='Stop'
           $st = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
             Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
           if (-not $st) {
@@ -66,6 +61,7 @@ jobs:
         id: find
         shell: pwsh
         run: |
+          $ErrorActionPreference='Stop'
           $exe = Get-ChildItem -Path . -Filter *.exe -Recurse | Sort-Object Length -Descending | Select-Object -First 1
           if (-not $exe) { Write-Error "No .exe found in downloaded artifact." }
           "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -76,6 +72,7 @@ jobs:
         env:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
+          $ErrorActionPreference='Stop'
           $exe = "${{ steps.find.outputs.exe }}"
           $ok = $false
           $rfc = @("http://timestamp.digicert.com","http://timestamp.sectigo.com/rfc3161","http://rfc3161timestamp.globalsign.com/advanced")
@@ -92,42 +89,44 @@ jobs:
           }
           if (-not $ok) { Write-Error "All timestamp servers failed." }
 
-      - name: Build release/ and archives (versioned, AV-friendly)
+      - name: Pack release/ (names include run_id; AV-friendly ZIP)
         id: pack
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
           Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $ver = "${{ inputs.version }}"
+          $rid = "${{ inputs.run_id }}"
 
           $ws = "${{ github.workspace }}"
           $relDir = Join-Path $ws "release"
           if (Test-Path $relDir) { Remove-Item $relDir -Recurse -Force }
           New-Item -ItemType Directory -Force $relDir | Out-Null
 
-          # Fichiers versionnés
-          $exeOut = Join-Path $relDir ("TauriKargo-" + $ver + "-windows-x64.exe")
+          # Fichiers avec run_id pour éviter tout cache
+          $exeOut = Join-Path $relDir ("TauriKargo-" + $rid + "-windows-x64.exe")
           Copy-Item -LiteralPath "${{ steps.find.outputs.exe }}" -Destination $exeOut -Force
 
-          $root = Join-Path $relDir ("TauriKargo-" + $ver)
+          $root = Join-Path $relDir ("TauriKargo-" + $rid)
           New-Item -ItemType Directory -Force $root | Out-Null
           $bin = Join-Path $root "bin"
           New-Item -ItemType Directory -Force $bin | Out-Null
           Copy-Item -LiteralPath $exeOut -Destination (Join-Path $bin (Split-Path $exeOut -Leaf)) -Force
           "See bin\$(Split-Path $exeOut -Leaf)" | Set-Content (Join-Path $root "README.txt")
 
-          $zipOut = Join-Path $relDir ("TauriKargo-" + $ver + "-windows-x64.zip")
+          $zipOut = Join-Path $relDir ("TauriKargo-" + $rid + "-windows-x64.zip")
           if (Test-Path $zipOut) { Remove-Item $zipOut -Force }
           [IO.Compression.ZipFile]::CreateFromDirectory($root, $zipOut, [IO.Compression.CompressionLevel]::Optimal, $true)
 
           "exe_rel=release/$(Split-Path $exeOut -Leaf)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "zip_rel=release/$(Split-Path $zipOut -Leaf)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=run-${rid}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "title=Signed build (run ${rid})" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      # Artifacts (lisibles dans Actions)
+      # (Optionnel) artifacts lisibles dans Actions
       - name: Upload signed exe (artifact)
         uses: actions/upload-artifact@v4
         with:
-          name: TauriKargo-${{ inputs.version }}-windows-x64.exe
+          name: TauriKargo-${{ inputs.run_id }}-windows-x64.exe
           path: ${{ steps.pack.outputs.exe_rel }}
           if-no-files-found: error
           compression-level: 0
@@ -135,25 +134,16 @@ jobs:
       - name: Upload signed zip (artifact)
         uses: actions/upload-artifact@v4
         with:
-          name: TauriKargo-${{ inputs.version }}-windows-x64.zip
+          name: TauriKargo-${{ inputs.run_id }}-windows-x64.zip
           path: ${{ steps.pack.outputs.zip_rel }}
           if-no-files-found: error
           compression-level: 0
 
-      - name: Compute tag/title
-        id: meta
-        shell: pwsh
-        run: |
-          $tag = "v${{ inputs.version }}"
-          $title = "${{ inputs.release_name }} - v${{ inputs.version }}"
-          "tag=$tag"    | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "title=$title"| Out-File -FilePath $env:GITHUB_OUTPUT -Append
-
       - name: Create / Update Release (no files)
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: ${{ steps.meta.outputs.title }}
+          tag_name: ${{ steps.pack.outputs.tag }}
+          name: ${{ steps.pack.outputs.title }}
           prerelease: false
           make_latest: true
           draft: false
@@ -165,15 +155,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ steps.meta.outputs.tag }}" "${{ steps.pack.outputs.zip_rel }}#TauriKargo-${{ inputs.version }}-windows-x64.zip" --clobber
-          gh release upload "${{ steps.meta.outputs.tag }}" "${{ steps.pack.outputs.exe_rel }}#TauriKargo-${{ inputs.version }}-windows-x64.exe" --clobber
+          gh release upload "${{ steps.pack.outputs.tag }}" "${{ steps.pack.outputs.zip_rel }}#TauriKargo-${{ inputs.run_id }}-windows-x64.zip" --clobber
+          gh release upload "${{ steps.pack.outputs.tag }}" "${{ steps.pack.outputs.exe_rel }}#TauriKargo-${{ inputs.run_id }}-windows-x64.exe" --clobber
 
       - name: Summary
         shell: pwsh
         run: |
           @(
-            "# Versioned Release"
-            "Tag : v${{ inputs.version }}"
-            "EXE : TauriKargo-${{ inputs.version }}-windows-x64.exe"
-            "ZIP : TauriKargo-${{ inputs.version }}-windows-x64.zip"
+            "# Release from run_id"
+            "Tag : ${{ steps.pack.outputs.tag }}"
+            "EXE : TauriKargo-${{ inputs.run_id }}-windows-x64.exe"
+            "ZIP : TauriKargo-${{ inputs.run_id }}-windows-x64.zip"
+            "Link (ZIP) : https://github.com/${{ github.repository }}/releases/download/${{ steps.pack.outputs.tag }}/TauriKargo-${{ inputs.run_id }}-windows-x64.zip"
+            "Link (EXE) : https://github.com/${{ github.repository }}/releases/download/${{ steps.pack.outputs.tag }}/TauriKargo-${{ inputs.run_id }}-windows-x64.exe"
           ) | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
