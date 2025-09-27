@@ -1,4 +1,4 @@
-name: Build Windows EXE (signed) + Release ZIP
+name: Build Windows EXE (signed) + Release ZIP - test
 
 on:
   workflow_dispatch:
