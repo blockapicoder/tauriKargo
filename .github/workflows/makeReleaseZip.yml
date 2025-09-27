@@ -1,16 +1,10 @@
-name: Sign & Release (latest success on main)
+name: Sign & Release (auto from build)
 
 on:
-  workflow_dispatch:
-    inputs:
-      artifact_name:
-        description: "Nom EXACT de l'artifact contenant l'EXE (côté build)"
-        required: true
-        default: "tauri-windows-exe"
-      build_workflow_file:
-        description: "Chemin du fichier du workflow de build"
-        required: true
-        default: ".github/workflows/build-windows-exe.yml"  # ⬅️ le FICHIER, pas le name
+  workflow_run:
+    workflows: ["Build Windows EXE (signed) + Release ZIP"]  # nom 'name:' du workflow build
+    branches: [main]
+    types: [completed]
 
 permissions:
   actions: read
@@ -18,19 +12,22 @@ permissions:
 
 jobs:
   sign_and_release:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: windows-latest
 
+    env:
+      ARTIFACT_NAME: tauri-windows-exe   # <-- nom EXACT de l'artifact produit par le build
+
     steps:
-      - name: Download artifact (latest success on main)
+      # 1) Télécharger l'artifact DU RUN QUI VIENT DE FINIR (pas besoin de run_id manuel)
+      - name: Download artifact from triggering run
         uses: dawidd6/action-download-artifact@v3
         with:
-          workflow: ${{ inputs.build_workflow_file }}   # ⬅️ ex: .github/workflows/build-windows-exe.yml
-          branch: main
-          workflow_conclusion: success
-          check_artifacts: true
-          name: ${{ inputs.artifact_name }}
+          run_id: ${{ github.event.workflow_run.id }}
+          name: ${{ env.ARTIFACT_NAME }}
           if_no_artifact_found: fail
 
+      # 2) Préparer la signature
       - name: Require signing secrets
         shell: pwsh
         run: |
@@ -62,6 +59,7 @@ jobs:
           if (-not $st) { Write-Error "signtool.exe not found." }
           "SIGNTOOL=$st" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+      # 3) Signer l'EXE
       - name: Locate EXE
         id: find
         shell: pwsh
@@ -70,8 +68,9 @@ jobs:
           $exe = Get-ChildItem -Path . -Filter *.exe -Recurse | Sort-Object Length -Descending | Select-Object -First 1
           if (-not $exe) { Write-Error "No .exe found in downloaded artifact." }
           "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "EXE => $($exe.FullName)"
 
-      - name: Sign EXE (timestamp)
+      - name: Sign EXE (timestamp; RFC3161 then /t)
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
@@ -82,26 +81,30 @@ jobs:
           $rfc = @("http://timestamp.digicert.com","http://timestamp.sectigo.com/rfc3161","http://rfc3161timestamp.globalsign.com/advanced")
           foreach ($u in $rfc) {
             & "$env:SIGNTOOL" sign /fd sha256 /f certificate\codesign.pfx /p "$env:WINDOWS_CERTIFICATE_PASSWORD" /tr $u /td sha256 /d "TauriKargo" "$exe"
-            if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+            if ($LASTEXITCODE -eq 0) { $ok = $true; break } else { Write-Warning "RFC3161 failed: $u" }
           }
           if (-not $ok) {
             $legacy=@("http://timestamp.digicert.com","http://timestamp.sectigo.com","http://timestamp.globalsign.com/scripts/timestamp.dll")
             foreach ($u in $legacy) {
               & "$env:SIGNTOOL" sign /fd sha256 /f certificate\codesign.pfx /p "$env:WINDOWS_CERTIFICATE_PASSWORD" /t $u /d "TauriKargo" "$exe"
-              if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+              if ($LASTEXITCODE -eq 0) { $ok = $true; break } else { Write-Warning "legacy /t failed: $u" }
             }
           }
           if (-not $ok) { Write-Error "All timestamp servers failed." }
 
+      # 4) Construire release/ (EXE + ZIP avec exe dans bin/)
       - name: Build release/ (exe + zip)
         id: pack
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
           Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $tag  = "sign-${{ github.run_id }}"
-          $base = "TauriKargo-${{ github.run_id }}"
-          $title= "Signed build (sign run ${{ github.run_id }})"
+
+          # Tag & base liés AU RUN DU BUILD (évite 'latest' & cache CDN)
+          $srcRun = "${{ github.event.workflow_run.id }}"
+          $tag  = "run-$srcRun"
+          $base = "TauriKargo-$srcRun"
+          $title= "Signed build (source run $srcRun)"
 
           $ws = "${{ github.workspace }}"
           $relDir = Join-Path $ws "release"
@@ -111,6 +114,7 @@ jobs:
           $exeOut = Join-Path $relDir ($base + "-windows-x64.exe")
           Copy-Item -LiteralPath "${{ steps.find.outputs.exe }}" -Destination $exeOut -Force
 
+          # ZIP 'safe': EXE dans bin/
           $root = Join-Path $relDir $base
           New-Item -ItemType Directory -Force $root | Out-Null
           $bin = Join-Path $root "bin"
@@ -128,6 +132,7 @@ jobs:
           "title=$title"| Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "base=$base" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
+      # 5) (optionnel) Artifacts dans l’onglet Actions
       - name: Upload signed exe (artifact)
         uses: actions/upload-artifact@v4
         with:
@@ -144,6 +149,7 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+      # 6) Release GitHub (softprops uniquement)
       - name: Create / Update Release (attach files)
         uses: softprops/action-gh-release@v2
         with:
@@ -159,6 +165,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # 7) Liens
       - name: Summary (links)
         shell: pwsh
         run: |
