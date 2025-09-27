@@ -62,100 +62,83 @@ jobs:
           }
           if (-not $st) { Write-Error "signtool.exe not found." }
           "SIGNTOOL=$st" | Out-File -FilePath $env:GITHUB_ENV -Append
-          & "$st" sign /? | Select-Object -First 5 | Out-String | Write-Host
 
-      - name: Locate EXE (only)
+      - name: Locate EXE
         id: find
         shell: pwsh
         run: |
           $exe = Get-ChildItem -Path . -Filter *.exe -Recurse | Sort-Object Length -Descending | Select-Object -First 1
           if (-not $exe) { Write-Error "No .exe found in downloaded artifact." }
-          $zip = Join-Path $exe.DirectoryName "$($exe.BaseName)-windows-x64.zip"
           "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "EXE => $($exe.FullName)"
-          Write-Host "ZIP (to create) => $zip"
 
-      - name: Sign EXE (try multiple timestamp servers)
+      - name: Sign EXE (RFC3161 then /t)
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           $exe = "${{ steps.find.outputs.exe }}"
-          $serversRFC3161 = @(
-            "http://timestamp.digicert.com",
-            "http://timestamp.sectigo.com/rfc3161",
-            "http://rfc3161timestamp.globalsign.com/advanced"
-          )
-          $serversLegacy = @(
-            "http://timestamp.digicert.com",
-            "http://timestamp.sectigo.com",
-            "http://timestamp.globalsign.com/scripts/timestamp.dll"
-          )
-          $signed = $false
-          foreach ($url in $serversRFC3161) {
-            Write-Host "-> Trying RFC3161: $url"
-            & "$env:SIGNTOOL" sign `
-              /fd sha256 `
-              /f certificate\codesign.pfx `
-              /p "$env:WINDOWS_CERTIFICATE_PASSWORD" `
-              /tr $url `
-              /td sha256 `
-              /d "TauriKargo" `
-              "$exe"
-            if ($LASTEXITCODE -eq 0) { $signed = $true; break }
-            Write-Warning "RFC3161 failed with $url (exit $LASTEXITCODE)"
+          $ok = $false
+          $rfc = @("http://timestamp.digicert.com","http://timestamp.sectigo.com/rfc3161","http://rfc3161timestamp.globalsign.com/advanced")
+          foreach ($u in $rfc) {
+            & "$env:SIGNTOOL" sign /fd sha256 /f certificate\codesign.pfx /p "$env:WINDOWS_CERTIFICATE_PASSWORD" /tr $u /td sha256 /d "TauriKargo" "$exe"
+            if ($LASTEXITCODE -eq 0) { $ok = $true; break } else { Write-Warning "RFC3161 fail: $u" }
           }
-          if (-not $signed) {
-            foreach ($url in $serversLegacy) {
-              Write-Host "-> Trying legacy /t: $url"
-              & "$env:SIGNTOOL" sign `
-                /fd sha256 `
-                /f certificate\codesign.pfx `
-                /p "$env:WINDOWS_CERTIFICATE_PASSWORD" `
-                /t $url `
-                /d "TauriKargo" `
-                "$exe"
-              if ($LASTEXITCODE -eq 0) { $signed = $true; break }
-              Write-Warning "Legacy /t failed with $url (exit $LASTEXITCODE)"
+          if (-not $ok) {
+            $legacy=@("http://timestamp.digicert.com","http://timestamp.sectigo.com","http://timestamp.globalsign.com/scripts/timestamp.dll")
+            foreach ($u in $legacy) {
+              & "$env:SIGNTOOL" sign /fd sha256 /f certificate\codesign.pfx /p "$env:WINDOWS_CERTIFICATE_PASSWORD" /t $u /d "TauriKargo" "$exe"
+              if ($LASTEXITCODE -eq 0) { $ok = $true; break } else { Write-Warning "legacy /t fail: $u" }
             }
           }
-          if (-not $signed) { Write-Error "All timestamp servers failed." }
+          if (-not $ok) { Write-Error "All timestamp servers failed." }
 
-      - name: Build ZIP from signed EXE (robuste)
-        id: zip
+      - name: Build release/ and ZIP (safe layout)
+        id: pack
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
+          $ErrorActionPreference='Stop'
           Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-          $exe = "${{ steps.find.outputs.exe }}"
-          $zip = "${{ steps.find.outputs.zip }}"
+          $ws = "${{ github.workspace }}"
+          $relDir = Join-Path $ws "release"
+          if (Test-Path $relDir) { Remove-Item $relDir -Recurse -Force }
+          New-Item -ItemType Directory -Force $relDir | Out-Null
 
-          $packDir = Join-Path ([IO.Path]::GetDirectoryName($zip)) "pack_zip"
-          if (Test-Path $packDir) { Remove-Item $packDir -Recurse -Force }
-          New-Item -ItemType Directory -Force -Path $packDir | Out-Null
+          $exeAbs = "${{ steps.find.outputs.exe }}"
+          $exeName = Split-Path $exeAbs -Leaf
+          $exeOut  = Join-Path $relDir $exeName
+          Copy-Item -LiteralPath $exeAbs -Destination $exeOut -Force
 
-          Copy-Item -LiteralPath $exe -Destination (Join-Path $packDir ([IO.Path]::GetFileName($exe))) -Force
+          # ZIP final: même dossier release + nom fixe demandé
+          $zipOut = Join-Path $relDir "TauriKargo-windows-x64.zip"
 
-          if (Test-Path $zip) { Remove-Item -LiteralPath $zip -Force }
-          [IO.Compression.ZipFile]::CreateFromDirectory($packDir, $zip, [IO.Compression.CompressionLevel]::Optimal, $false)
+          # On met l'EXE dans un sous-dossier pour éviter les flags AV
+          $tmpFolder = Join-Path $relDir "TauriKargo"
+          New-Item -ItemType Directory -Force $tmpFolder | Out-Null
+          $bin = Join-Path $tmpFolder "bin"
+          New-Item -ItemType Directory -Force $bin | Out-Null
+          Copy-Item -LiteralPath $exeOut -Destination (Join-Path $bin $exeName) -Force
+          "See bin\$exeName" | Set-Content (Join-Path $tmpFolder "README.txt")
 
-          $sha256_zip = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
-          $sha256_exe = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+          if (Test-Path $zipOut) { Remove-Item $zipOut -Force }
+          [IO.Compression.ZipFile]::CreateFromDirectory($tmpFolder, $zipOut, [IO.Compression.CompressionLevel]::Optimal, $true)
 
-          "zip_sha256=$sha256_zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "exe_sha256=$sha256_exe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          # Sorties POSIX relatives pour la Release + Artifacts
+          $exeRel = "release/$exeName"
+          $zipRel = "release/TauriKargo-windows-x64.zip"
+          "exe_rel=$exeRel" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "zip_rel=$zipRel" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-          Write-Host "ZIP: $zip"
-          Write-Host "ZIP SHA256: $sha256_zip"
-          Write-Host "EXE SHA256: $sha256_exe"
+          Write-Host "EXE => $exeRel"
+          Write-Host "ZIP => $zipRel"
 
+      # === Artifacts (lisibles dans l'onglet Actions) ===
       - name: Upload signed exe (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: signed-exe
-          path: ${{ steps.find.outputs.exe }}
+          path: ${{ steps.pack.outputs.exe_rel }}
           if-no-files-found: error
           compression-level: 0
 
@@ -163,31 +146,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: signed-zip
-          path: ${{ steps.find.outputs.zip }}
+          path: ${{ steps.pack.outputs.zip_rel }}
           if-no-files-found: error
           compression-level: 0
 
-      - name: Stage release files (normalize paths)
-        id: stage
-        shell: pwsh
-        run: |
-          $ws = "${{ github.workspace }}"
-          $out = Join-Path $ws "release"
-          if (Test-Path $out) { Remove-Item $out -Recurse -Force }
-          New-Item -ItemType Directory -Force $out | Out-Null
-
-          $exe = "${{ steps.find.outputs.exe }}"
-          $zip = "${{ steps.find.outputs.zip }}"
-
-          Copy-Item $exe (Join-Path $out (Split-Path $exe -Leaf)) -Force
-          Copy-Item $zip (Join-Path $out (Split-Path $zip -Leaf)) -Force
-
-          $exeRel = ("release/" + (Split-Path $exe -Leaf))
-          $zipRel = ("release/" + (Split-Path $zip -Leaf))
-
-          "exe_rel=$exeRel" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "zip_rel=$zipRel" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-
+      # === Release GitHub (liens stables) ===
       - name: Create / Update Pre-release (no files)
         uses: softprops/action-gh-release@v2
         with:
@@ -196,7 +159,6 @@ jobs:
           prerelease: true
           make_latest: true
           draft: false
-          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -205,17 +167,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ inputs.tag_name }}" "${{ steps.stage.outputs.zip_rel }}" --clobber
-          gh release upload "${{ inputs.tag_name }}" "${{ steps.stage.outputs.exe_rel }}" --clobber
+          gh release upload "${{ inputs.tag_name }}" "${{ steps.pack.outputs.zip_rel }}" --clobber
+          gh release upload "${{ inputs.tag_name }}" "${{ steps.pack.outputs.exe_rel }}" --clobber
 
       - name: Summary
         shell: pwsh
         run: |
           @(
             "# Signing & Release summary"
-            "EXE : ${{ steps.find.outputs.exe }}"
-            "EXE SHA256 : ${{ steps.zip.outputs.exe_sha256 }}"
-            "ZIP : ${{ steps.find.outputs.zip }}"
-            "ZIP SHA256 : ${{ steps.zip.outputs.zip_sha256 }}"
+            "EXE : ${{ steps.pack.outputs.exe_rel }}"
+            "ZIP : ${{ steps.pack.outputs.zip_rel }}"
             "Tag : ${{ inputs.tag_name }}"
           ) | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
