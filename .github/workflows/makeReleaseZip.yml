@@ -1,18 +1,14 @@
-name: Sign & Release (robust fetch)
+name: Sign & Release (latest success on main)
 
 on:
   workflow_dispatch:
     inputs:
-      run_id:
-        description: "Optionnel: run_id précis (sinon: dernier run success sur main)"
-        required: false
-        default: ""
       artifact_name:
-        description: "Nom exact de l'artifact contenant l'EXE (côté build)"
+        description: "Nom EXACT de l'artifact contenant l'EXE (côté build)"
         required: true
         default: "tauri-windows-exe"
       build_workflow_file:
-        description: "Nom du fichier workflow de build (pour 'latest success')"
+        description: "Nom du fichier du workflow de build (qui produit l'artifact)"
         required: true
         default: "build-windows-exe.yml"
 
@@ -23,27 +19,11 @@ permissions:
 jobs:
   sign_and_release:
     runs-on: windows-latest
-    env:
-      REPO: ${{ github.repository }}
+
     steps:
-      ########################################
-      # 1) TÉLÉCHARGEMENT ARTIFACT (ROBUSTE) #
-      ########################################
-
-      # (A) Si run_id fourni → téléchargement direct depuis ce run
-      - name: Download artifact (by run_id)
-        if: ${{ inputs.run_id != '' }}
-        uses: dawidd6/action-download-artifact@v3
-        with:
-          run_id: ${{ inputs.run_id }}
-          name: ${{ inputs.artifact_name }}
-          if_no_artifact_found: fail
-
-      # (B) Sinon → dernier run "success" du workflow de build sur main
+      # 1) Télécharger l'EXE depuis le DERNIER run 'success' sur main
       - name: Download artifact (latest success on main)
-        if: ${{ inputs.run_id == '' }}
         uses: dawidd6/action-download-artifact@v3
-        continue-on-error: true
         with:
           workflow: ${{ inputs.build_workflow_file }}   # ex: build-windows-exe.yml
           branch: main
@@ -52,64 +32,7 @@ jobs:
           name: ${{ inputs.artifact_name }}
           if_no_artifact_found: fail
 
-      # (C) Fallback universel: GitHub API → dernier artifact par NOM sur tout le repo
-      - name: Fallback: fetch latest artifact by name via GitHub API
-        if: ${{ inputs.run_id == '' }}
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ART_NAME: ${{ inputs.artifact_name }}
-        run: |
-          $ErrorActionPreference='Continue'
-          # Si un .exe est déjà présent (étapes A ou B ont réussi), on sort.
-          $already = Get-ChildItem -Recurse -Filter *.exe | Select-Object -First 1
-          if ($already) { Write-Host "Artifact already present, skipping fallback."; exit 0 }
-
-          $owner,$repo = "${{ env.REPO }}".Split('/')
-          $headers = @{
-            "Authorization" = "Bearer $env:GH_TOKEN"
-            "Accept"        = "application/vnd.github+json"
-            "X-GitHub-Api-Version" = "2022-11-28"
-          }
-
-          $page = 1
-          $per  = 100
-          $found = $null
-          while ($true) {
-            $url = "https://api.github.com/repos/$owner/$repo/actions/artifacts?per_page=$per&page=$page"
-            $resp = Invoke-RestMethod -Method GET -Uri $url -Headers $headers
-            if (-not $resp -or -not $resp.artifacts -or $resp.artifacts.Count -eq 0) { break }
-            $candidates = $resp.artifacts | Where-Object { $_.name -eq $env:ART_NAME -and $_.expired -eq $false }
-            if ($candidates) {
-              $found = $candidates | Sort-Object -Property created_at -Descending | Select-Object -First 1
-              break
-            }
-            $page++
-            if ($page -gt 10) { break } # garde-fou
-          }
-
-          if (-not $found) {
-            Write-Error "No artifact named '$env:ART_NAME' found via API."
-          } else {
-            Write-Host "Found artifact id=$($found.id) name=$($found.name) created=$($found.created_at)"
-            $zipPath = Join-Path $pwd "artifact.zip"
-            $dl = "https://api.github.com/repos/$owner/$repo/actions/artifacts/$($found.id)/zip"
-            Invoke-WebRequest -Uri $dl -Headers $headers -OutFile $zipPath
-            $dest = Join-Path $pwd "artifact_extracted"
-            if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
-            New-Item -ItemType Directory -Force $dest | Out-Null
-            Expand-Archive -Path $zipPath -DestinationPath $dest -Force
-            Copy-Item -Path (Join-Path $dest "*") -Destination $pwd -Recurse -Force
-            Remove-Item $zipPath -Force
-          }
-
-          # Vérif finale
-          $exe = Get-ChildItem -Recurse -Filter *.exe | Select-Object -First 1
-          if (-not $exe) { Write-Error "EXE not found after all fetch attempts." } else { Write-Host "EXE => $($exe.FullName)" }
-
-      ########################################
-      # 2) SIGNATURE                         #
-      ########################################
+      # 2) Préparer la signature (PFX)
       - name: Require signing secrets
         shell: pwsh
         run: |
@@ -141,17 +64,18 @@ jobs:
           if (-not $st) { Write-Error "signtool.exe not found." }
           "SIGNTOOL=$st" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+      # 3) Signer l'EXE
       - name: Locate EXE
         id: find
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
           $exe = Get-ChildItem -Path . -Filter *.exe -Recurse | Sort-Object Length -Descending | Select-Object -First 1
-          if (-not $exe) { Write-Error "No .exe found after fetch." }
+          if (-not $exe) { Write-Error "No .exe found in downloaded artifact." }
           "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "EXE => $($exe.FullName)"
 
-      - name: Sign EXE (timestamp; fallback /t)
+      - name: Sign EXE (timestamp)
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
@@ -173,38 +97,29 @@ jobs:
           }
           if (-not $ok) { Write-Error "All timestamp servers failed." }
 
-      ########################################
-      # 3) PACKAGING & RELEASE               #
-      ########################################
-      - name: Build release/ (exe + zip + tar.gz)
+      # 4) Construire release/ (EXE + ZIP)
+      - name: Build release/ (exe + zip, simple)
         id: pack
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
           Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-          # Tag unique (évite latest/CDN): si run_id fourni → run-<run_id>, sinon → sign-<ce_workflow_run_id>
-          $ridInput = "${{ inputs.run_id }}"
-          if ([string]::IsNullOrWhiteSpace($ridInput)) {
-            $tag  = "sign-${{ github.run_id }}"
-            $base = "TauriKargo-${{ github.run_id }}"
-            $title= "Signed build (sign run ${{ github.run_id }})"
-          } else {
-            $tag  = "run-$ridInput"
-            $base = "TauriKargo-$ridInput"
-            $title= "Signed build (run $ridInput)"
-          }
+          # Tag & base uniques par CE workflow-run (évite 'latest' et le cache CDN)
+          $tag  = "sign-${{ github.run_id }}"
+          $base = "TauriKargo-${{ github.run_id }}"
+          $title= "Signed build (sign run ${{ github.run_id }})"
 
           $ws = "${{ github.workspace }}"
           $relDir = Join-Path $ws "release"
           if (Test-Path $relDir) { Remove-Item $relDir -Recurse -Force }
           New-Item -ItemType Directory -Force $relDir | Out-Null
 
-          # EXE public (nom unique)
+          # EXE public
           $exeOut = Join-Path $relDir ($base + "-windows-x64.exe")
           Copy-Item -LiteralPath "${{ steps.find.outputs.exe }}" -Destination $exeOut -Force
 
-          # Dossier pour archives (EXE dans bin/ pour réduire les faux positifs AV)
+          # ZIP 'safe': EXE dans bin/
           $root = Join-Path $relDir $base
           New-Item -ItemType Directory -Force $root | Out-Null
           $bin = Join-Path $root "bin"
@@ -212,25 +127,18 @@ jobs:
           Copy-Item -LiteralPath $exeOut -Destination (Join-Path $bin (Split-Path $exeOut -Leaf)) -Force
           "See bin\$(Split-Path $exeOut -Leaf)" | Set-Content (Join-Path $root "README.txt")
 
-          # ZIP
           $zipOut = Join-Path $relDir ($base + "-windows-x64.zip")
           if (Test-Path $zipOut) { Remove-Item $zipOut -Force }
           [IO.Compression.ZipFile]::CreateFromDirectory($root, $zipOut, [IO.Compression.CompressionLevel]::Optimal, $true)
 
-          # TAR.GZ (alternative si AV bloque le ZIP)
-          $tgzOut = Join-Path $relDir ($base + "-windows-x64.tar.gz")
-          if (Test-Path $tgzOut) { Remove-Item $tgzOut -Force }
-          tar -czf $tgzOut -C $relDir $base
-
-          # Sorties POSIX relatives
+          # Sorties POSIX pour la suite
           "exe_rel=release/$(Split-Path $exeOut -Leaf)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "zip_rel=release/$(Split-Path $zipOut -Leaf)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "tgz_rel=release/$(Split-Path $tgzOut -Leaf)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "tag=$tag"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "title=$title"| Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "base=$base" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      # Artifacts (onglet Actions)
+      # 5) Artifacts (onglet Actions) – optionnel mais utile
       - name: Upload signed exe (artifact)
         uses: actions/upload-artifact@v4
         with:
@@ -247,15 +155,7 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
-      - name: Upload tar.gz (artifact)
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.pack.outputs.base }}-windows-x64.tar.gz
-          path: ${{ steps.pack.outputs.tgz_rel }}
-          if-no-files-found: ignore
-          compression-level: 0
-
-      # Release GitHub (softprops uniquement)
+      # 6) Release GitHub (softprops uniquement)
       - name: Create / Update Release (attach files)
         uses: softprops/action-gh-release@v2
         with:
@@ -268,12 +168,11 @@ jobs:
           files: |
             ${{ steps.pack.outputs.zip_rel }}
             ${{ steps.pack.outputs.exe_rel }}
-            ${{ steps.pack.outputs.tgz_rel }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Récap
-      - name: Summary
+      # 7) Liens
+      - name: Summary (links)
         shell: pwsh
         run: |
           $tag  = "${{ steps.pack.outputs.tag }}"
@@ -283,6 +182,5 @@ jobs:
             "# Release"
             "Tag : $tag"
             "ZIP : https://github.com/$repo/releases/download/$tag/$base-windows-x64.zip"
-            "TGZ : https://github.com/$repo/releases/download/$tag/$base-windows-x64.tar.gz"
             "EXE : https://github.com/$repo/releases/download/$tag/$base-windows-x64.exe"
           ) | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
