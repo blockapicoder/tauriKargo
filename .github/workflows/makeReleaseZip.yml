@@ -1,0 +1,223 @@
+name: Make release and zip
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Optionnel: run_id du build (sinon: dernier run success sur main)"
+        required: false
+        default: ""
+      artifact_name:
+        description: "Nom exact de l'artifact contenant l'EXE (côté build)"
+        required: true
+        default: "tauri-windows-exe"
+      build_workflow_file:
+        description: "Nom du fichier workflow de build (pour 'latest success')"
+        required: true
+        default: "build-windows-exe.yml"
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  sign_and_release:
+    runs-on: windows-latest
+    steps:
+      # ---- Récupération de l'EXE depuis le build ----
+      - name: Download artifact (by run_id)
+        if: ${{ inputs.run_id != '' }}
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          run_id: ${{ inputs.run_id }}
+          name: ${{ inputs.artifact_name }}
+          if_no_artifact_found: fail
+
+      - name: Download artifact (latest success on main)
+        if: ${{ inputs.run_id == '' }}
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: ${{ inputs.build_workflow_file }}   # ex: build-windows-exe.yml
+          branch: main
+          workflow_conclusion: success
+          check_artifacts: true
+          name: ${{ inputs.artifact_name }}
+          if_no_artifact_found: fail
+
+      # ---- Préparation signature ----
+      - name: Require signing secrets
+        shell: pwsh
+        run: |
+          if (-not "${{ secrets.WINDOWS_CERTIFICATE }}" -or -not "${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}") {
+            Write-Error "Missing secrets: WINDOWS_CERTIFICATE / WINDOWS_CERTIFICATE_PASSWORD"
+          }
+
+      - name: Decode PFX
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+        run: |
+          $ErrorActionPreference='Stop'
+          New-Item -ItemType Directory -Force certificate | Out-Null
+          Set-Content certificate\cert.b64 $env:WINDOWS_CERTIFICATE
+          certutil -decode certificate\cert.b64 certificate\codesign.pfx | Out-Null
+
+      - name: Resolve signtool.exe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $st = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $st) {
+            choco install windows-sdk-10-version-10.0.22621.0 -y --no-progress
+            $st = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+              Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $st) { Write-Error "signtool.exe not found." }
+          "SIGNTOOL=$st" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Locate EXE
+        id: find
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $exe = Get-ChildItem -Path . -Filter *.exe -Recurse | Sort-Object Length -Descending | Select-Object -First 1
+          if (-not $exe) { Write-Error "No .exe found in downloaded artifact." }
+          "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "EXE => $($exe.FullName)"
+
+      # ---- Signature (timestamp requis, fallback legacy /t) ----
+      - name: Sign EXE (timestamp)
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $ErrorActionPreference='Stop'
+          $exe = "${{ steps.find.outputs.exe }}"
+
+          $ok = $false
+          $rfc = @("http://timestamp.digicert.com","http://timestamp.sectigo.com/rfc3161","http://rfc3161timestamp.globalsign.com/advanced")
+          foreach ($u in $rfc) {
+            & "$env:SIGNTOOL" sign /fd sha256 /f certificate\codesign.pfx /p "$env:WINDOWS_CERTIFICATE_PASSWORD" /tr $u /td sha256 /d "TauriKargo" "$exe"
+            if ($LASTEXITCODE -eq 0) { $ok = $true; break } else { Write-Warning "RFC3161 failed: $u" }
+          }
+          if (-not $ok) {
+            $legacy=@("http://timestamp.digicert.com","http://timestamp.sectigo.com","http://timestamp.globalsign.com/scripts/timestamp.dll")
+            foreach ($u in $legacy) {
+              & "$env:SIGNTOOL" sign /fd sha256 /f certificate\codesign.pfx /p "$env:WINDOWS_CERTIFICATE_PASSWORD" /t $u /d "TauriKargo" "$exe"
+              if ($LASTEXITCODE -eq 0) { $ok = $true; break } else { Write-Warning "legacy /t failed: $u" }
+            }
+          }
+          if (-not $ok) { Write-Error "All timestamp servers failed." }
+
+      # ---- Packaging EXE, ZIP (bin/) et TAR.GZ ----
+      - name: Build release/ (exe + zip + tar.gz)
+        id: pack
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+          # Tag & titre: si run_id fourni => run-<run_id>, sinon => sign-<this_workflow_run_id>
+          $ridInput = "${{ inputs.run_id }}"
+          if ([string]::IsNullOrWhiteSpace($ridInput)) {
+            $tag  = "sign-${{ github.run_id }}"
+            $base = "TauriKargo-${{ github.run_id }}"
+            $title= "Signed build (sign run ${{ github.run_id }})"
+          } else {
+            $tag  = "run-$ridInput"
+            $base = "TauriKargo-$ridInput"
+            $title= "Signed build (run $ridInput)"
+          }
+
+          $ws = "${{ github.workspace }}"
+          $relDir = Join-Path $ws "release"
+          if (Test-Path $relDir) { Remove-Item $relDir -Recurse -Force }
+          New-Item -ItemType Directory -Force $relDir | Out-Null
+
+          # EXE public (nom unique)
+          $exeOut = Join-Path $relDir ($base + "-windows-x64.exe")
+          Copy-Item -LiteralPath "${{ steps.find.outputs.exe }}" -Destination $exeOut -Force
+
+          # Dossier pour archives (EXE dans bin/ pour réduire les faux positifs AV)
+          $root = Join-Path $relDir $base
+          New-Item -ItemType Directory -Force $root | Out-Null
+          $bin = Join-Path $root "bin"
+          New-Item -ItemType Directory -Force $bin | Out-Null
+          Copy-Item -LiteralPath $exeOut -Destination (Join-Path $bin (Split-Path $exeOut -Leaf)) -Force
+          "See bin\$(Split-Path $exeOut -Leaf)" | Set-Content (Join-Path $root "README.txt")
+
+          # ZIP
+          $zipOut = Join-Path $relDir ($base + "-windows-x64.zip")
+          if (Test-Path $zipOut) { Remove-Item $zipOut -Force }
+          [IO.Compression.ZipFile]::CreateFromDirectory($root, $zipOut, [IO.Compression.CompressionLevel]::Optimal, $true)
+
+          # TAR.GZ (alternative si AV bloque le ZIP)
+          $tgzOut = Join-Path $relDir ($base + "-windows-x64.tar.gz")
+          if (Test-Path $tgzOut) { Remove-Item $tgzOut -Force }
+          tar -czf $tgzOut -C $relDir $base
+
+          # Sorties POSIX relatives
+          "exe_rel=release/$(Split-Path $exeOut -Leaf)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "zip_rel=release/$(Split-Path $zipOut -Leaf)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tgz_rel=release/$(Split-Path $tgzOut -Leaf)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=$tag"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "title=$title"| Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "base=$base" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      # ---- Artifacts (onglet Actions) ----
+      - name: Upload signed exe (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pack.outputs.base }}-windows-x64.exe
+          path: ${{ steps.pack.outputs.exe_rel }}
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload signed zip (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pack.outputs.base }}-windows-x64.zip
+          path: ${{ steps.pack.outputs.zip_rel }}
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload tar.gz (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pack.outputs.base }}-windows-x64.tar.gz
+          path: ${{ steps.pack.outputs.tgz_rel }}
+          if-no-files-found: ignore
+          compression-level: 0
+
+      # ---- Release GitHub (softprops uniquement) ----
+      - name: Create / Update Release (attach files)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.pack.outputs.tag }}
+          name: ${{ steps.pack.outputs.title }}
+          prerelease: false
+          make_latest: true
+          draft: false
+          fail_on_unmatched_files: true
+          files: |
+            ${{ steps.pack.outputs.zip_rel }}
+            ${{ steps.pack.outputs.exe_rel }}
+            ${{ steps.pack.outputs.tgz_rel }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ---- Récap ----
+      - name: Summary (links)
+        shell: pwsh
+        run: |
+          $tag  = "${{ steps.pack.outputs.tag }}"
+          $repo = "${{ github.repository }}"
+          $base = "${{ steps.pack.outputs.base }}"
+          @(
+            "# Release"
+            "Tag : $tag"
+            "ZIP : https://github.com/$repo/releases/download/$tag/$base-windows-x64.zip"
+            "TGZ : https://github.com/$repo/releases/download/$tag/$base-windows-x64.tar.gz"
+            "EXE : https://github.com/$repo/releases/download/$tag/$base-windows-x64.exe"
+          ) | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
