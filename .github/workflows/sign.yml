@@ -78,18 +78,18 @@ jobs:
           $rfc = @("http://timestamp.digicert.com","http://timestamp.sectigo.com/rfc3161","http://rfc3161timestamp.globalsign.com/advanced")
           foreach ($u in $rfc) {
             & "$env:SIGNTOOL" sign /fd sha256 /f certificate\codesign.pfx /p "$env:WINDOWS_CERTIFICATE_PASSWORD" /tr $u /td sha256 /d "TauriKargo" "$exe"
-            if ($LASTEXITCODE -eq 0) { $ok = $true; break } else { Write-Warning "RFC3161 fail: $u" }
+            if ($LASTEXITCODE -eq 0) { $ok = $true; break } else { Write-Warning "RFC3161 failed: $u" }
           }
           if (-not $ok) {
             $legacy=@("http://timestamp.digicert.com","http://timestamp.sectigo.com","http://timestamp.globalsign.com/scripts/timestamp.dll")
             foreach ($u in $legacy) {
               & "$env:SIGNTOOL" sign /fd sha256 /f certificate\codesign.pfx /p "$env:WINDOWS_CERTIFICATE_PASSWORD" /t $u /d "TauriKargo" "$exe"
-              if ($LASTEXITCODE -eq 0) { $ok = $true; break } else { Write-Warning "legacy /t fail: $u" }
+              if ($LASTEXITCODE -eq 0) { $ok = $true; break } else { Write-Warning "legacy /t failed: $u" }
             }
           }
           if (-not $ok) { Write-Error "All timestamp servers failed." }
 
-      - name: Pack release/ (names include run_id; AV-friendly ZIP)
+      - name: Build release/ (exe + zip, names include run_id)
         id: pack
         shell: pwsh
         run: |
@@ -102,10 +102,11 @@ jobs:
           if (Test-Path $relDir) { Remove-Item $relDir -Recurse -Force }
           New-Item -ItemType Directory -Force $relDir | Out-Null
 
-          # Fichiers avec run_id pour éviter tout cache
+          # Noms explicites et distincts
           $exeOut = Join-Path $relDir ("TauriKargo-" + $rid + "-windows-x64.exe")
           Copy-Item -LiteralPath "${{ steps.find.outputs.exe }}" -Destination $exeOut -Force
 
+          # ZIP AV-friendly: exe dans bin/
           $root = Join-Path $relDir ("TauriKargo-" + $rid)
           New-Item -ItemType Directory -Force $root | Out-Null
           $bin = Join-Path $root "bin"
@@ -117,12 +118,13 @@ jobs:
           if (Test-Path $zipOut) { Remove-Item $zipOut -Force }
           [IO.Compression.ZipFile]::CreateFromDirectory($root, $zipOut, [IO.Compression.CompressionLevel]::Optimal, $true)
 
+          # Sorties POSIX relatives (source unique de vérité)
           "exe_rel=release/$(Split-Path $exeOut -Leaf)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "zip_rel=release/$(Split-Path $zipOut -Leaf)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "tag=run-${rid}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "title=Signed build (run ${rid})" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      # (Optionnel) artifacts lisibles dans Actions
+      # Artifacts (onglet Actions)
       - name: Upload signed exe (artifact)
         uses: actions/upload-artifact@v4
         with:
@@ -139,7 +141,8 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
-      - name: Create / Update Release (no files)
+      # Release GitHub: softprops uniquement (pas de gh), chemins POSIX relatifs
+      - name: Create / Update Release (attach files)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.pack.outputs.tag }}
@@ -147,25 +150,23 @@ jobs:
           prerelease: false
           make_latest: true
           draft: false
+          fail_on_unmatched_files: true
+          files: |
+            ${{ steps.pack.outputs.zip_rel }}
+            ${{ steps.pack.outputs.exe_rel }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload assets via gh (fixed names, clobber)
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "${{ steps.pack.outputs.tag }}" "${{ steps.pack.outputs.zip_rel }}#TauriKargo-${{ inputs.run_id }}-windows-x64.zip" --clobber
-          gh release upload "${{ steps.pack.outputs.tag }}" "${{ steps.pack.outputs.exe_rel }}#TauriKargo-${{ inputs.run_id }}-windows-x64.exe" --clobber
-
-      - name: Summary
+      - name: Summary (links)
         shell: pwsh
         run: |
+          $tag = "${{ steps.pack.outputs.tag }}"
+          $repo = "${{ github.repository }}"
+          $zip = "TauriKargo-${{ inputs.run_id }}-windows-x64.zip"
+          $exe = "TauriKargo-${{ inputs.run_id }}-windows-x64.exe"
           @(
-            "# Release from run_id"
-            "Tag : ${{ steps.pack.outputs.tag }}"
-            "EXE : TauriKargo-${{ inputs.run_id }}-windows-x64.exe"
-            "ZIP : TauriKargo-${{ inputs.run_id }}-windows-x64.zip"
-            "Link (ZIP) : https://github.com/${{ github.repository }}/releases/download/${{ steps.pack.outputs.tag }}/TauriKargo-${{ inputs.run_id }}-windows-x64.zip"
-            "Link (EXE) : https://github.com/${{ github.repository }}/releases/download/${{ steps.pack.outputs.tag }}/TauriKargo-${{ inputs.run_id }}-windows-x64.exe"
+            "# Release"
+            "Tag : $tag"
+            "ZIP : https://github.com/$repo/releases/download/$tag/$zip"
+            "EXE : https://github.com/$repo/releases/download/$tag/$exe"
           ) | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
