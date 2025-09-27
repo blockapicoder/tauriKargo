@@ -122,18 +122,31 @@ jobs:
           }
           if (-not $signed) { Write-Error "All timestamp servers failed." }
 
-      - name: Build ZIP from signed EXE
+      - name: Build ZIP from signed EXE (robuste)
         id: zip
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+
           $exe = "${{ steps.find.outputs.exe }}"
           $zip = "${{ steps.find.outputs.zip }}"
-          if (Test-Path $zip) { Remove-Item $zip -Force }
-          Compress-Archive -Path $exe -DestinationPath $zip
-          $sha256_zip = (Get-FileHash $zip -Algorithm SHA256).Hash
-          $sha256_exe = (Get-FileHash $exe -Algorithm SHA256).Hash
+
+          $packDir = Join-Path ([IO.Path]::GetDirectoryName($zip)) "pack_zip"
+          if (Test-Path $packDir) { Remove-Item $packDir -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $packDir | Out-Null
+
+          Copy-Item -LiteralPath $exe -Destination (Join-Path $packDir ([IO.Path]::GetFileName($exe))) -Force
+
+          if (Test-Path $zip) { Remove-Item -LiteralPath $zip -Force }
+          [IO.Compression.ZipFile]::CreateFromDirectory($packDir, $zip, [IO.Compression.CompressionLevel]::Optimal, $false)
+
+          $sha256_zip = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
+          $sha256_exe = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+
           "zip_sha256=$sha256_zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "exe_sha256=$sha256_exe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
           Write-Host "ZIP: $zip"
           Write-Host "ZIP SHA256: $sha256_zip"
           Write-Host "EXE SHA256: $sha256_exe"
@@ -175,7 +188,7 @@ jobs:
           "exe_rel=$exeRel" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "zip_rel=$zipRel" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      - name: Create / Update Pre-release (ZIP + EXE)
+      - name: Create / Update Pre-release (no files)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag_name }}
@@ -184,11 +197,16 @@ jobs:
           make_latest: true
           draft: false
           fail_on_unmatched_files: true
-          files: |
-            ${{ steps.stage.outputs.zip_rel }}
-            ${{ steps.stage.outputs.exe_rel }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload assets via gh (clobber)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ inputs.tag_name }}" "${{ steps.stage.outputs.zip_rel }}" --clobber
+          gh release upload "${{ inputs.tag_name }}" "${{ steps.stage.outputs.exe_rel }}" --clobber
 
       - name: Summary
         shell: pwsh
