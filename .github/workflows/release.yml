@@ -85,6 +85,7 @@ jobs:
           if (Test-Path $zip) { Remove-Item $zip -Force }
           Compress-Archive -Path $exe.FullName -DestinationPath $zip
           $sha256 = (Get-FileHash $zip -Algorithm SHA256).Hash
+          "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "sha256=$sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -105,19 +106,23 @@ jobs:
         shell: pwsh
         run: |
           $zip="${{ steps.prep.outputs.zip }}"
+          $exe="${{ steps.prep.outputs.exe }}"
           $sha="${{ steps.prep.outputs.sha256 }}"
           $v="${{ steps.prep.outputs.version }}"
           $lines = @()
           $lines += "# Build Windows (cache + signature si secrets)"
           $lines += ("Version : {0}" -f $v)
+          $lines += ("EXE : {0}" -f $exe)
           $lines += ("Fichier ZIP : {0}" -f $zip)
           $lines += ("SHA256 ZIP : {0}" -f $sha)
           $lines += ""
           $lines += "#Telechargez depuis Releases -> Latest signed build (lien permanent)."
           $lines | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
 
-      - name: Upload artifact (optional)
+      - name: Upload artifact (EXE)
         uses: actions/upload-artifact@v4
         with:
-          name: tauri-windows-zip
-          path: ${{ steps.prep.outputs.zip }}
+          name: tauri-windows-exe
+          path: ${{ steps.prep.outputs.exe }}
+          if-no-files-found: error
+          compression-level: 0
