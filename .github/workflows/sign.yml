@@ -93,7 +93,7 @@ jobs:
           }
           if (-not $ok) { Write-Error "All timestamp servers failed." }
 
-      - name: Build release/ and ZIP (safe layout)
+      - name: Build release/ and ZIP with fixed names
         id: pack
         shell: pwsh
         run: |
@@ -105,35 +105,28 @@ jobs:
           if (Test-Path $relDir) { Remove-Item $relDir -Recurse -Force }
           New-Item -ItemType Directory -Force $relDir | Out-Null
 
-          $exeAbs = "${{ steps.find.outputs.exe }}"
-          $exeName = Split-Path $exeAbs -Leaf
-          $exeOut  = Join-Path $relDir $exeName
-          Copy-Item -LiteralPath $exeAbs -Destination $exeOut -Force
+          # On impose des noms stables et distincts
+          $exeFixed = Join-Path $relDir "TauriKargo-windows-x64.exe"
+          Copy-Item -LiteralPath "${{ steps.find.outputs.exe }}" -Destination $exeFixed -Force
 
-          # ZIP final: même dossier release + nom fixe demandé
-          $zipOut = Join-Path $relDir "TauriKargo-windows-x64.zip"
-
-          # On met l'EXE dans un sous-dossier pour éviter les flags AV
           $tmpFolder = Join-Path $relDir "TauriKargo"
           New-Item -ItemType Directory -Force $tmpFolder | Out-Null
           $bin = Join-Path $tmpFolder "bin"
           New-Item -ItemType Directory -Force $bin | Out-Null
-          Copy-Item -LiteralPath $exeOut -Destination (Join-Path $bin $exeName) -Force
-          "See bin\$exeName" | Set-Content (Join-Path $tmpFolder "README.txt")
+          Copy-Item -LiteralPath $exeFixed -Destination (Join-Path $bin "TauriKargo-windows-x64.exe") -Force
+          "See bin\TauriKargo-windows-x64.exe" | Set-Content (Join-Path $tmpFolder "README.txt")
 
-          if (Test-Path $zipOut) { Remove-Item $zipOut -Force }
-          [IO.Compression.ZipFile]::CreateFromDirectory($tmpFolder, $zipOut, [IO.Compression.CompressionLevel]::Optimal, $true)
+          $zipFixed = Join-Path $relDir "TauriKargo-windows-x64.zip"
+          if (Test-Path $zipFixed) { Remove-Item $zipFixed -Force }
+          [IO.Compression.ZipFile]::CreateFromDirectory($tmpFolder, $zipFixed, [IO.Compression.CompressionLevel]::Optimal, $true)
 
-          # Sorties POSIX relatives pour la Release + Artifacts
-          $exeRel = "release/$exeName"
-          $zipRel = "release/TauriKargo-windows-x64.zip"
-          "exe_rel=$exeRel" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "zip_rel=$zipRel" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          # Sorties POSIX
+          "exe_rel=release/TauriKargo-windows-x64.exe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "zip_rel=release/TauriKargo-windows-x64.zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "EXE => release/TauriKargo-windows-x64.exe"
+          Write-Host "ZIP => release/TauriKargo-windows-x64.zip"
 
-          Write-Host "EXE => $exeRel"
-          Write-Host "ZIP => $zipRel"
-
-      # === Artifacts (lisibles dans l'onglet Actions) ===
+      # Artifacts (mêmes fichiers/noms que la Release)
       - name: Upload signed exe (artifact)
         uses: actions/upload-artifact@v4
         with:
@@ -150,7 +143,7 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
-      # === Release GitHub (liens stables) ===
+      # Release GitHub : on force les noms d'assets
       - name: Create / Update Pre-release (no files)
         uses: softprops/action-gh-release@v2
         with:
@@ -162,20 +155,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload assets via gh (clobber)
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "${{ inputs.tag_name }}" "${{ steps.pack.outputs.zip_rel }}" --clobber
-          gh release upload "${{ inputs.tag_name }}" "${{ steps.pack.outputs.exe_rel }}" --clobber
-
       - name: Summary
         shell: pwsh
         run: |
           @(
             "# Signing & Release summary"
-            "EXE : ${{ steps.pack.outputs.exe_rel }}"
-            "ZIP : ${{ steps.pack.outputs.zip_rel }}"
+            "EXE : release/TauriKargo-windows-x64.exe"
+            "ZIP : release/TauriKargo-windows-x64.zip"
             "Tag : ${{ inputs.tag_name }}"
           ) | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
