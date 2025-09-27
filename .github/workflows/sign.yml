@@ -7,7 +7,7 @@ on:
         description: "Run ID du build ayant publié l'artifact"
         required: true
       artifact_name:
-        description: "Nom exact de l'artifact à télécharger (doit contenir l'EXE)"
+        description: "Nom exact de l'artifact à télécharger (contient l'EXE)"
         required: true
         default: "tauri-windows-exe"
       tag_name:
@@ -70,7 +70,6 @@ jobs:
         run: |
           $exe = Get-ChildItem -Path . -Filter *.exe -Recurse | Sort-Object Length -Descending | Select-Object -First 1
           if (-not $exe) { Write-Error "No .exe found in downloaded artifact." }
-          # Construire un nom de ZIP cohérent à partir du nom de l'EXE
           $zip = Join-Path $exe.DirectoryName "$($exe.BaseName)-windows-x64.zip"
           "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -123,38 +122,19 @@ jobs:
           }
           if (-not $signed) { Write-Error "All timestamp servers failed." }
 
-      - name: Trust self-signed cert on runner (to avoid verify failure)
-        shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-        run: |
-          $pfxPath = "certificate\codesign.pfx"
-          $pwd = (ConvertTo-SecureString -AsPlainText "$env:WINDOWS_CERTIFICATE_PASSWORD" -Force)
-          $x509 = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($pfxPath, $pwd)
-          if ($x509.Subject -eq $x509.Issuer) {
-            $cerBytes = $x509.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
-            [IO.File]::WriteAllBytes("certificate\codesign.cer", $cerBytes)
-            Import-Certificate -FilePath "certificate\codesign.cer" -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
-            Import-Certificate -FilePath "certificate\codesign.cer" -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
-            Write-Host "✅ Self-signed certificate trusted on runner for verification."
-          } else {
-            Write-Host "Certificate issued by CA – no local import needed."
-          }
-
-      - name: Verify signature (do not fail on self-signed after trust)
+      - name: Verify signature (signtool + PS, tolerant)
         shell: pwsh
         run: |
           $exe = "${{ steps.find.outputs.exe }}"
+          & "$env:SIGNTOOL" verify /pa /tw /v "$exe"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "signtool verify non-zero (fréquent avec cert auto-signé)."
+          }
           $sig = Get-AuthenticodeSignature "$exe"
           $status = $sig.Status.ToString()
-          $msg = $sig.StatusMessage
-          Write-Host "Status: $status"
-          Write-Host "Message: $msg"
-          if ($status -eq 'NotSigned' -or $status -eq 'HashMismatch' -or $status -eq 'InvalidCertificate') {
-            Write-Error "Signature invalid: $status"
-          }
-          if ($status -ne 'Valid') {
-            Write-Warning "Signature status: $status (continuing)"
+          Write-Host "PS Authenticode status: $status"
+          if ($status -in @('NotSigned','HashMismatch','InvalidCertificate')) {
+            Write-Error "Signature invalide: $status"
           }
 
       - name: Build ZIP from signed EXE
