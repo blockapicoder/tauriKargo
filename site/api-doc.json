@@ -2,14 +2,14 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Tauri Static Server API",
-    "description": "API exposée par l'application Axum/Tauri (gestion d'embed, configuration, fichiers, exécution de processus, explorateur, serveurs enfants).\n\n**Note** : certaines routes utilisent POST même pour des lectures (ex. `/api/file/{file}`) par conception côté serveur.",
+    "description": "API exposed by the Axum/Tauri application (embed management, configuration, files, process execution, explorer, child servers).\n\n**Note**: some routes use POST even for reads (e.g. `/api/file/{file}`) by server design.",
     "version": "1.0.0"
   },
   "servers": [
     {
       "url": "http://127.0.0.1:{port}",
       "variables": {
-        "port": { "default": "8080", "description": "Port local du serveur" }
+        "port": { "default": "8080", "description": "Local server port" }
       }
     }
   ],
@@ -26,7 +26,7 @@
     "/api/embed": {
       "post": {
         "tags": ["Embed"],
-        "summary": "Empaqueter deux dossiers dans un exécutable",
+        "summary": "Package two folders into a single executable",
         "requestBody": {
           "required": true,
           "content": {
@@ -41,128 +41,128 @@
           }
         },
         "responses": {
-          "200": { "description": "Succès", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EmbedResp" } } } },
-          "400": { "description": "Requête invalide", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EmbedResp" } } } },
-          "500": { "description": "Erreur interne", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EmbedResp" } } } }
+          "200": { "description": "Success", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EmbedResp" } } } },
+          "400": { "description": "Invalid request", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EmbedResp" } } } },
+          "500": { "description": "Internal error", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EmbedResp" } } } }
         }
       }
     },
     "/api/useConfig": {
       "post": {
         "tags": ["Config"],
-        "summary": "Changer les dossiers racines (code & executable)",
+        "summary": "Change root folders (code & executable)",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UseConfigReq" } } } },
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UseConfigResp" } } } }, "400": { "description": "Dossiers invalides", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UseConfigResp" } } } } }
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UseConfigResp" } } } }, "400": { "description": "Invalid folders", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UseConfigResp" } } } } }
       }
     },
     "/api/get-config": {
       "post": {
         "tags": ["Config"],
-        "summary": "Obtenir la configuration courante",
+        "summary": "Get current configuration",
         "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GetConfigResp" } } } } }
       }
     },
     "/api/current-directory": {
       "post": {
         "tags": ["Files"],
-        "summary": "Définir la base des opérations de fichiers",
+        "summary": "Set base directory for file operations",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CurrentDirReq" } } } },
         "responses": {
           "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CurrentDirResp" } } } },
-          "400": { "description": "Pas un dossier", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CurrentDirResp" } } } },
-          "404": { "description": "Introuvable", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CurrentDirResp" } } } }
+          "400": { "description": "Not a directory", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CurrentDirResp" } } } },
+          "404": { "description": "Not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CurrentDirResp" } } } }
         }
       }
     },
     "/api/file/{file}": {
       "post": {
         "tags": ["Files"],
-        "summary": "Lire ou écrire un fichier relatif à la base courante",
+        "summary": "Read or write a file relative to the current base",
         "parameters": [
-          { "name": "file", "in": "path", "required": true, "schema": { "type": "string" }, "description": "Chemin relatif (peut contenir des sous-dossiers)" }
+          { "name": "file", "in": "path", "required": true, "schema": { "type": "string" }, "description": "Relative path (may contain subfolders)" }
         ],
         "requestBody": {
           "required": false,
           "content": {
-            "application/octet-stream": { "schema": { "type": "string", "format": "binary", "description": "Si le body est non vide ⇒ écriture brute du fichier. Si body vide ⇒ lecture." } },
-            "text/plain; charset=utf-8": { "schema": { "type": "string", "description": "Écriture texte (UTF-8 exigé). Body vide ⇒ lecture." } }
+            "application/octet-stream": { "schema": { "type": "string", "format": "binary", "description": "If the body is non-empty ⇒ raw file write. If the body is empty ⇒ read." } },
+            "text/plain; charset=utf-8": { "schema": { "type": "string", "description": "Text write (UTF-8 required). Empty body ⇒ read." } }
           }
         },
         "responses": {
           "200": {
-            "description": "Lecture réussie (retourne le contenu du fichier) OU écriture réussie (retour JSON)",
+            "description": "Successful read (returns file contents) OR successful write (JSON response)",
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/FileWriteResp" } },
               "application/octet-stream": { "schema": { "type": "string", "format": "binary" } },
               "text/plain": { "schema": { "type": "string" } }
             }
           },
-          "400": { "description": "Chemin invalide / encodage texte invalide", "content": { "text/plain": { "schema": { "type": "string" } } } },
-          "404": { "description": "Fichier introuvable (lecture)", "content": { "text/plain": { "schema": { "type": "string" } } } },
-          "500": { "description": "Erreur serveur", "content": { "text/plain": { "schema": { "type": "string" } } } }
+          "400": { "description": "Invalid path / invalid text encoding", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "404": { "description": "File not found (read)", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "500": { "description": "Server error", "content": { "text/plain": { "schema": { "type": "string" } } } }
         }
       }
     },
     "/api/run": {
       "post": {
         "tags": ["Run"],
-        "summary": "Lancer un exécutable (dans exec_root)",
+        "summary": "Launch an executable (in exec_root)",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RunReq" }, "examples": { "list": { "value": { "executableName": "monoutil", "arguments": ["--help"] } }, "line": { "value": { "executableName": "monoutil", "arguments": "-o \"C:/tmp/a b\" --flag" } } } } } },
-        "responses": { "200": { "description": "Processus lancé", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RunResp" } } } }, "404": { "description": "Exécutable introuvable", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RunResp" } } } }, "500": { "description": "Erreur de lancement", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RunResp" } } } } }
+        "responses": { "200": { "description": "Process started", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RunResp" } } } }, "404": { "description": "Executable not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RunResp" } } } }, "500": { "description": "Launch error", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RunResp" } } } } }
       }
     },
     "/api/run/status": {
       "post": {
         "tags": ["Run"],
-        "summary": "Statut d'un processus lancé",
+        "summary": "Status of a started process",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProcIdReq" } } } },
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProcStatusResp" } } } }, "404": { "description": "id inconnu", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProcStatusResp" } } } }, "500": { "description": "Erreur interne", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProcStatusResp" } } } } }
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProcStatusResp" } } } }, "404": { "description": "Unknown id", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProcStatusResp" } } } }, "500": { "description": "Internal error", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProcStatusResp" } } } } }
       }
     },
     "/api/run/stop": {
       "post": {
         "tags": ["Run"],
-        "summary": "Tuer un processus lancé",
+        "summary": "Kill a started process",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProcIdReq" } } } },
-        "responses": { "200": { "description": "Tué ou déjà terminé", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProcStopResp" } } } }, "404": { "description": "id inconnu", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProcStopResp" } } } }, "500": { "description": "Échec kill", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProcStopResp" } } } } }
+        "responses": { "200": { "description": "Killed or already finished", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProcStopResp" } } } }, "404": { "description": "Unknown id", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProcStopResp" } } } }, "500": { "description": "Kill failed", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProcStopResp" } } } } }
       }
     },
     "/api/run/stopAll": {
       "post": {
         "tags": ["Run"],
-        "summary": "Tuer tous les processus lancés",
+        "summary": "Kill all started processes",
         "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StopAllResp" } } } } }
       }
     },
     "/api/explorer": {
       "post": {
         "tags": ["Explorer"],
-        "summary": "Explorer un chemin (fichier ou dossier)",
+        "summary": "Explore a path (file or folder)",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExplorerReq" }, "example": { "path": "C:/Users" } } } },
         "responses": {
           "200": {
-            "description": "Retourne soit un fichier soit un répertoire",
+            "description": "Returns either a file or a directory",
             "content": { "application/json": { "schema": { "oneOf": [ { "$ref": "#/components/schemas/ExplorerFile" }, { "$ref": "#/components/schemas/ExplorerDirectory" } ] } } }
           },
-          "404": { "description": "Introuvable", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExplorerError" } } } },
-          "500": { "description": "Erreur de lecture répertoire", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExplorerError" } } } }
+          "404": { "description": "Not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExplorerError" } } } },
+          "500": { "description": "Directory read error", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExplorerError" } } } }
         }
       }
     },
     "/api/newServer": {
       "post": {
         "tags": ["Servers"],
-        "summary": "Lancer un serveur enfant sur 127.0.0.1",
+        "summary": "Start a child server on 127.0.0.1",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NewServerReq" } } } },
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NewServerResp" } } } }, "400": { "description": "Paramètres invalides", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NewServerResp" } } } }, "500": { "description": "Échec démarrage", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NewServerResp" } } } } }
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NewServerResp" } } } }, "400": { "description": "Invalid parameters", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NewServerResp" } } } }, "500": { "description": "Startup failed", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NewServerResp" } } } } }
       }
     },
     "/api/stop": {
       "post": {
         "tags": ["Servers"],
-        "summary": "Arrêter un serveur (enfant ou courant)",
+        "summary": "Stop a server (child or current)",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StopServerReq" }, "examples": { "stopChild": { "value": { "port": 52341 } }, "stopSelf": { "value": { } } } } } },
-        "responses": { "200": { "description": "OK / déjà en arrêt", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StopServerResp" } } } }, "404": { "description": "Serveur inconnu", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StopServerResp" } } } }, "400": { "description": "Requête invalide (pas de port sur un parent)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StopServerResp" } } } } }
+        "responses": { "200": { "description": "OK / already stopping", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StopServerResp" } } } }, "404": { "description": "Unknown server", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StopServerResp" } } } }, "400": { "description": "Invalid request (no port on a parent)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StopServerResp" } } } } }
       }
     }
   },
@@ -172,9 +172,9 @@
         "type": "object",
         "required": ["output"],
         "properties": {
-          "code": { "type": "string", "nullable": true, "description": "Dossier code à empaqueter (obligatoire côté serveur)" },
-          "executable": { "type": "string", "nullable": true, "description": "Dossier binaire à empaqueter" },
-          "output": { "type": "string", "description": "Chemin du nouvel exécutable" }
+          "code": { "type": "string", "nullable": true, "description": "Code folder to package (required server-side)" },
+          "executable": { "type": "string", "nullable": true, "description": "Binary folder to package" },
+          "output": { "type": "string", "description": "Path of the new executable" }
         }
       },
       "EmbedResp": {
@@ -188,7 +188,7 @@
       "UseConfigReq": { "type": "object", "required": ["code", "executable"], "properties": { "code": { "type": "string" }, "executable": { "type": "string" } } },
       "UseConfigResp": { "type": "object", "required": ["ok", "message"], "properties": { "ok": { "type": "boolean" }, "message": { "type": "string" } } },
       "GetConfigResp": { "type": "object", "required": ["ok", "code", "executable", "fileBase"], "properties": { "ok": { "type": "boolean" }, "code": { "type": "string" }, "executable": { "type": "string" }, "fileBase": { "type": "string" } } },
-      "CurrentDirReq": { "type": "object", "required": ["path"], "properties": { "path": { "type": "string", "description": "Chemin absolu ou relatif. Vide ⇒ CWD." } } },
+      "CurrentDirReq": { "type": "object", "required": ["path"], "properties": { "path": { "type": "string", "description": "Absolute or relative path. Empty ⇒ CWD." } } },
       "CurrentDirResp": { "type": "object", "required": ["ok", "message", "current"], "properties": { "ok": { "type": "boolean" }, "message": { "type": "string" }, "current": { "type": "string" } } },
       "FileWriteResp": { "type": "object", "required": ["ok", "message", "path"], "properties": { "ok": { "type": "boolean" }, "message": { "type": "string" }, "path": { "type": "string" } } },
       "RunReq": { "type": "object", "required": ["executableName"], "properties": { "executableName": { "type": "string" }, "arguments": { "oneOf": [ { "type": "array", "items": { "type": "string" } }, { "type": "string" } ] } } },

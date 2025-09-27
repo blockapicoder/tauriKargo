@@ -1,65 +1,125 @@
-<!doctype html>
-<html lang="fr">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Documentation OpenAPI</title>
-    <meta name="description" content="Affiche api-doc.json (OpenAPI) avec Redoc" />
-    <style>
-      html,body{height:100%;margin:0}
-      body{font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";}
-      #loading{padding:16px}
-      .topbar{position:fixed;inset:0 0 auto 0;height:48px;display:flex;align-items:center;gap:12px;padding:0 12px;border-bottom:1px solid #e5e7eb;background:#fff;z-index:10}
-      .topbar h1{font-size:16px;margin:0;font-weight:600}
-      .topbar small{color:#6b7280}
-      .container{position:absolute;inset:48px 0 0 0;}
-      .btn{appearance:none;border:1px solid #d1d5db;border-radius:8px;padding:6px 10px;background:#fff;cursor:pointer}
-      .btn:active{transform:translateY(1px)}
-      @media (prefers-color-scheme: dark){
-        body{background:#0b1020;color:#e5e7eb}
-        .topbar{background:#0b1020;border-bottom-color:#1f2937}
-        .btn{background:#0b1020;color:#e5e7eb;border-color:#374151}
-      }
-    </style>
-  </head>
-  <body>
-    <div class="topbar">
-      <h1>Documentation API</h1>
-      <small>Source : <code>./api-doc.json</code></small>
-      <button id="reload" class="btn" title="Recharger la spécification">Recharger</button>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>TauriKargo The goal: <strong>code fast, see fast, package fast</strong>  </title>
+    <meta name="description" content="TauriKargo is a Tauri-based tool to code, preview and package desktop apps faster than Electron or native Tauri."/>
+  <style>
+    :root{
+      --bg:#0b0b12; --panel:#12121c; --ink:#e8e8f0; --muted:#b6b6c7;
+      --a:#9ddbff; --b:#39ff88; --c:#ff7aa2; --y:#ffd166; --stroke:#2a2a3b;
+    }
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);
+      font:14px/1.6 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,Arial}
+    .wrap{max-width:1100px;margin:0 auto;padding:32px 16px 80px}
+    h1{font-size:32px;margin:0 0 6px}
+    h2{font-size:22px;margin:28px 0 10px}
+    p{margin:8px 0}
+    .muted{color:var(--muted)}
+    .hero{display:grid;gap:12px;grid-template-columns:1fr;align-items:center}
+    .pill{display:inline-flex;gap:8px;align-items:center;border:1px solid #2a2a3b;
+      border-radius:999px;padding:6px 10px;color:var(--muted);font-size:12px}
+    .grid{display:grid;gap:14px}
+    @media(min-width:900px){.hero{grid-template-columns:1.2fr .8fr}}
+    .card{background:var(--panel);border:1px solid var(--stroke);border-radius:14px;padding:16px}
+    .cols{display:grid;gap:14px}
+    @media(min-width:860px){.cols{grid-template-columns:1fr 1fr 1fr}}
+    .good{color:var(--b)} .warn{color:var(--y)} .bad{color:var(--c)}
+    code,kbd{background:#151524;border:1px solid #22223a;border-radius:6px;padding:2px 6px}
+    pre{background:#0f0f1a;border:1px solid #22223a;border-radius:12px;padding:12px;overflow:auto}
+    .tag{display:inline-block;background:#0f1a14;border:1px solid #1f3a2a;color:#9dffc7;
+      padding:2px 8px;border-radius:999px;font-size:12px;margin-right:6px}
+    a{color:var(--a);text-decoration:none}
+    svg{max-width:100%;height:auto;display:block}
+    .foot{margin-top:36px;color:var(--muted);font-size:12px}
+  </style>
+</head>
+<body>
+  <header>
+
+  </header>
+  <div class="wrap">
+    <div class="hero">
+      <div>
+        <span class="pill">⏱️ Fast dev • 🧩 Import maps • 📦 Embed folder</span>
+        <h1>TauriKargo — <strong>code fast, see fast, package fast</strong> </h1>
+        <p class="muted">A flow that favors an ultra-short iterative loop: TypeScript transpiled on the fly,
+          JS libraries imported from <code>node_modules</code> via an import map, and packaging that <em>embeds</em> a folder (front + optional backend).</p>
+        <p>
+          <span class="tag">Direct TypeScript</span>
+          <span class="tag">Import map → node_modules</span>
+          <span class="tag">Embedded backend (Python/Node/Deno/Bun)</span>
+        </p>
+        <div class="toolbar">
+          <a class="btn primary" href="https://github.com/blockapicoder/tauriKargo/releases" download>⬇️ Download TauriKargo.zip (Windows)</a>
+          <a class="btn primary" href="./tauriKargoExamples.zip" download>⬇️ Download TauriKargoExamples.zip (Windows)</a>
+          <a class="btn" href="/api-doc.html">📚 API Reference</a>
+        </div>
+      </div>
+
     </div>
+ <div class="card" style="margin-top:16px">
+      <h2>Embedded backend diagram</h2>
+      <svg viewBox="0 0 800 200" role="img" aria-label="Embedded backend diagram">
+        <rect x="20" y="20" width="250" height="160" rx="12" fill="#151524" stroke="#2a2a3b"/>
+        <text x="32" y="44" fill="#e8e8f0" font-size="12">Frontend (WebView)</text>
+        <text x="32" y="64" fill="#b6b6c7" font-size="12">index.html + /src TS + import map</text>
+        <text x="32" y="84" fill="#b6b6c7" font-size="12">fetch → http://127.0.0.1:PORT/api/*</text>
 
-    <div class="container">
-      <div id="loading">Chargement de la doc depuis <code>api-doc.json</code>…</div>
-      <!-- Redoc rendra la documentation ici -->
-      <redoc id="redoc" spec-url="api-doc.json" lazy-rendering></redoc>
+        <path d="M270 100 L360 100" stroke="#9ddbff" stroke-width="2" marker-end="url(#arrow2)"/>
+        <text x="290" y="90" fill="#9ddbff" font-size="11">Local HTTP</text>
+
+        <rect x="360" y="20" width="200" height="160" rx="12" fill="#151524" stroke="#2a2a3b"/>
+        <text x="372" y="44" fill="#e8e8f0" font-size="12">TauriKargo executable</text>
+        <text x="372" y="64" fill="#b6b6c7" font-size="12">• launches WebView</text>
+        <text x="372" y="80" fill="#b6b6c7" font-size="12">• spawns backend (if present)</text>
+
+        <path d="M560 100 L650 100" stroke="#39ff88" stroke-width="2" marker-end="url(#arrow2)"/>
+        <text x="578" y="90" fill="#39ff88" font-size="11">spawn</text>
+
+        <rect x="650" y="20" width="130" height="160" rx="12" fill="#151524" stroke="#2a2a3b"/>
+        <text x="660" y="44" fill="#e8e8f0" font-size="12">Backend</text>
+        <text x="660" y="64" fill="#b6b6c7" font-size="12">Python</text>
+        <text x="660" y="80" fill="#b6b6c7" font-size="12">Node</text>
+        <text x="660" y="96" fill="#b6b6c7" font-size="12">Deno</text>
+        <text x="660" y="112" fill="#b6b6c7" font-size="12">Bun</text>
+
+        <defs>
+          <marker id="arrow2" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L0,6 L9,3 z" fill="#9ddbff"/>
+          </marker>
+        </defs>
+      </svg>
+      <p class="muted">The backend listens locally (127.0.0.1:PORT). The front calls the API routes.
+        You embed what you want (binary or script + runtime).</p>
     </div>
-
-    <!-- Redoc (affichage soigné, lecture confortable) -->
-    <script src="https://cdn.jsdelivr.net/npm/redoc@next/bundles/redoc.standalone.js"></script>
-    <script>
-      async function probe(){
-        const loading = document.getElementById('loading');
-        try {
-          const res = await fetch('api-doc.json', {cache:'no-store'});
-          if (!res.ok) throw new Error('HTTP '+res.status);
-          loading.style.display = 'none';
-        } catch (e) {
-          loading.innerHTML = '⚠️ Impossible de charger <code>api-doc.json</code>.<br>Vérifiez que le fichier est au même niveau que cette page et qu\'il est accessible.';
-        }
-      }
-      document.getElementById('reload').addEventListener('click', ()=>location.reload());
-      probe();
-    </script>
-
-    <!-- Alternative Swagger UI (interactif, try-it) — décommentez pour l\'utiliser à la place de Redoc
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
-    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
-    <script>
-      // Pour utiliser Swagger UI, cachez Redoc et montez SwaggerUIBundle
-      // document.getElementById('redoc').style.display = 'none';
-      // const ui = SwaggerUIBundle({ url: 'api-doc.json', dom_id: '.container' });
-    </script>
-    -->
-  </body>
+    <div class="grid" style="margin-top:18px">
+      <div class="card">
+        <h2>Why faster than <em>Electron</em>?</h2>
+        <ul>
+          <li><span class="good">No heavy runtime</span> to embed (Chromium+Node): uses the native WebView.</li>
+          <li><span class="good">No mandatory bundling</span> for development: TS transpiled on the fly, import map to <code>node_modules</code>.</li>
+          <li><span class="good">Simple packaging</span>: one executable + one embedded folder.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h2>Why faster than <em>native Tauri</em>?</h2>
+        <ul>
+          <li><span class="good">Very short dev loop</span>: no Rust rebuild at every UI iteration.</li>
+          <li><span class="good">Zero mandatory “dist”</span>: write TS, see the result immediately.</li>
+          <li><span class="good">Backend option</span>: if needed, spawn local <code>127.0.0.1</code> without friction.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h2>When to prefer Electron/native Tauri?</h2>
+        <ul>
+          <li><span class="warn">Very deep OS integrations</span> (advanced system APIs, drivers, sandbox…)</li>
+          <li><span class="warn">Extreme GPU/CPU performance</span> where a dedicated Rust/WebGPU pipeline is required.</li>
+          <li><span class="warn">Specific IT policies</span> (signing, binary hardening, etc.).</li>
+        </ul>
+      </div>
+   
+ 
+</body>
 </html>
