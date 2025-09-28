@@ -59,6 +59,10 @@ Si vous laissez le port <b>vide</b>, le serveur sera <b>arrêté automatiquement
 
 <script type="module">
   const $ = (s) => document.querySelector(s);
+  const rep = await fetch("https://blockapicoder.com/api-doc.json")
+  const jsonValue = await rep.json()
+  console.log("API doc:", jsonValue);
+
 
   function setBusy(b) {
     $("#go").disabled = b;

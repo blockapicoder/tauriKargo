@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bouton et Liste</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f3f4f6;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+
+        .card {
+            background: #fff;
+            padding: 20px;
+            border-radius: 16px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+            width: 340px;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        h1 {
+            font-size: 20px;
+            margin: 0;
+            color: #333;
+        }
+
+        button {
+            background: #2563eb;
+            color: white;
+            font-weight: bold;
+            border: none;
+            padding: 10px 16px;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: background 0.3s ease;
+        }
+
+        button:hover {
+            background: #1e40af;
+        }
+
+        ul {
+            margin: 0;
+            padding: 0;
+            list-style: none;
+            flex-grow: 1;
+        }
+
+        li {
+            background: #f9fafb;
+            padding: 10px;
+            border-radius: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #e5e7eb;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            color: #444;
+        }
+
+        .delete-btn {
+            background: #dc2626;
+            padding: 6px 10px;
+            font-size: 14px;
+            border-radius: 8px;
+        }
+
+        .delete-btn:hover {
+            background: #991b1b;
+        }
+
+        .save-btn {
+            background: #16a34a;
+        }
+
+        .save-btn:hover {
+            background: #166534;
+        }
+
+        button:disabled {
+            background: #9ca3af;
+            /* gris */
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="card">
+        <h1>Liste des personnages</h1>
+
+        <button id="addItem">➕ Ajouter un personnage</button>
+
+        <ul id="list"></ul>
+
+        <!-- Bouton enregistrer (action à coder par toi) -->
+        <button class="save-btn" id="save">💾 Enregistrer</button>
+    </div>
+
+    <script>
+
+
+
+
+        function removeItem(btn) {
+            btn.parentElement.remove();
+        }
+    </script>
+</body>
+<script src="index.ts"></script>
+
+</html>
