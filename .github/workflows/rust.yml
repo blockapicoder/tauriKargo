@@ -1,4 +1,4 @@
-name: Build Windows EXE (signed) + Release ZIP
+name: Test-Build Windows EXE (signed) + Release ZIP
 
 on:
   workflow_dispatch:
@@ -64,28 +64,54 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_WIN_CERT_PATH: ${{ env.TAURI_WIN_CERT_PATH }}
-          TAURI_WIN_CERT_PASS: ${{ env.TAURI_WIN_CERT_PASS }}
+          TAURI_WIN_CERT_PASS: ${{ env.TAURI_WIN_CERT_PASS }}   # <-- corrigé (point)
           TAURI_BUNDLE_TARGETS: app
         with:
           bundles: app
           args: --config src-tauri/tauri.ci.json
 
-      - name: Prepare release asset (zip + sha256)
+      # ZIP "safe" : EXE dans bin/ + README (au lieu d'un EXE à la racine)
+      - name: Prepare release asset (safe zip + sha256)
         id: prep
         shell: pwsh
         run: |
+          $ErrorActionPreference='Stop'
           $exe = Get-ChildItem src-tauri/target/release -Filter TauriKargo*.exe -Recurse | Select-Object -First 1
           if (-not $exe) { Write-Error "No EXE found after build." }
+
           $toml = Get-Content src-tauri\Cargo.toml -Raw
           if ($toml -match '(?m)^\s*version\s*=\s*"([^"]+)"') { $v = $Matches[1] } else { $v = "0.0.0" }
-          $zip = "TauriKargo-$v-windows-x64.zip"
-          if (Test-Path $zip) { Remove-Item $zip -Force }
-          Compress-Archive -Path $exe.FullName -DestinationPath $zip
-          $sha256 = (Get-FileHash $zip -Algorithm SHA256).Hash
-          "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "sha256=$sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+          $zipName   = "TauriKargo-$v-windows-x64.zip"
+          $exePublish= "TauriKargo-$v-windows-x64.exe"
+
+          $root = Join-Path $pwd ("TauriKargo-" + $v)
+          if (Test-Path $root) { Remove-Item $root -Recurse -Force }
+          New-Item -ItemType Directory -Force $root | Out-Null
+          $bin = Join-Path $root "bin"
+          New-Item -ItemType Directory -Force $bin | Out-Null
+
+          Copy-Item -LiteralPath $exe.FullName -Destination (Join-Path $bin $exePublish) -Force
+
+          @(
+            "TauriKargo $v"
+            ""
+            "Contenu:"
+            "  - bin\$exePublish"
+            ""
+            "Note: si Windows bloque le fichier après extraction,"
+            "clic droit sur le ZIP > Propriétés > 'Débloquer', puis re-dézipper."
+          ) | Set-Content (Join-Path $root "README.txt")
+
+          if (Test-Path $zipName) { Remove-Item $zipName -Force }
+          Compress-Archive -Path (Join-Path $root '*') -DestinationPath $zipName
+
+          $sha256 = (Get-FileHash $zipName -Algorithm SHA256).Hash
+
+          "exe=$($exe.FullName)"  | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "zip=$zipName"          | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "sha256=$sha256"        | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "version=$v"            | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Create or update Release
         uses: softprops/action-gh-release@v2
@@ -95,7 +121,9 @@ jobs:
           make_latest: true
           prerelease: true
           draft: false
-          files: ${{ steps.prep.outputs.zip }}
+          files: |
+            ${{ steps.prep.outputs.zip }}
+            ${{ steps.prep.outputs.exe }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -106,16 +134,17 @@ jobs:
           $exe="${{ steps.prep.outputs.exe }}"
           $sha="${{ steps.prep.outputs.sha256 }}"
           $v="${{ steps.prep.outputs.version }}"
-          $lines = @()
-          $lines += "# Build Windows (cache + signature si secrets)"
-          $lines += ("Version : {0}" -f $v)
-          $lines += ("EXE : {0}" -f $exe)
-          $lines += ("Fichier ZIP : {0}" -f $zip)
-          $lines += ("SHA256 ZIP : {0}" -f $sha)
-          $lines += ""
-          $lines += "#Telechargez depuis Releases -> Latest signed build (lien permanent)."
-          $lines | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          @(
+            "# Build Windows (cache + signature si secrets)"
+            "Version : $v"
+            "EXE : $exe"
+            "ZIP  : $zip"
+            "SHA256 ZIP : $sha"
+            ""
+            "Téléchargez depuis Releases -> Latest signed build (liens directs)."
+          ) | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
 
+      # (Optionnel) publier l'EXE aussi comme Artifact (dans Actions → Artifacts, ce sera toujours emballé en .zip)
       - name: Upload artifact (EXE)
         uses: actions/upload-artifact@v4
         with:

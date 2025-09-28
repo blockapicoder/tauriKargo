@@ -190,4 +190,4 @@ At runtime (after extraction):
 
 ## License
 
-MIT (or your preferred license). Update this section accordingly.
+MIT 
