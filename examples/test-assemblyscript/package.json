@@ -1,6 +1,0 @@
-{
-  "dependencies": {
-    "assemblyscript": "^0.28.8",
-    "monaco-editor": "0.43.0"
-  }
-}
