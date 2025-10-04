@@ -50,7 +50,7 @@
     "/api/useConfig": {
       "post": {
         "tags": ["Config"],
-        "summary": "Change root folders (code & executable)",
+        "summary": "Change root folders (code & executable",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UseConfigReq" } } } },
         "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UseConfigResp" } } } }, "400": { "description": "Invalid folders", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UseConfigResp" } } } } }
       }
@@ -100,6 +100,19 @@
           "400": { "description": "Invalid path / invalid text encoding", "content": { "text/plain": { "schema": { "type": "string" } } } },
           "404": { "description": "File not found (read)", "content": { "text/plain": { "schema": { "type": "string" } } } },
           "500": { "description": "Server error", "content": { "text/plain": { "schema": { "type": "string" } } } }
+        }
+      },
+      "delete": {
+        "tags": ["Files"],
+        "summary": "Delete a file relative to the current base",
+        "parameters": [
+          { "name": "file", "in": "path", "required": true, "schema": { "type": "string" }, "description": "Relative path (may contain subfolders). Must target a file, not a directory." }
+        ],
+        "responses": {
+          "200": { "description": "File deleted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FileDeleteResp" } } } },
+          "400": { "description": "Invalid path or path points to a directory", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "404": { "description": "File not found", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "500": { "description": "Server error while deleting", "content": { "text/plain": { "schema": { "type": "string" } } } }
         }
       }
     },
@@ -191,6 +204,7 @@
       "CurrentDirReq": { "type": "object", "required": ["path"], "properties": { "path": { "type": "string", "description": "Absolute or relative path. Empty ⇒ CWD." } } },
       "CurrentDirResp": { "type": "object", "required": ["ok", "message", "current"], "properties": { "ok": { "type": "boolean" }, "message": { "type": "string" }, "current": { "type": "string" } } },
       "FileWriteResp": { "type": "object", "required": ["ok", "message", "path"], "properties": { "ok": { "type": "boolean" }, "message": { "type": "string" }, "path": { "type": "string" } } },
+      "FileDeleteResp": { "type": "object", "required": ["ok", "message", "path"], "properties": { "ok": { "type": "boolean" }, "message": { "type": "string" }, "path": { "type": "string" } } },
       "RunReq": { "type": "object", "required": ["executableName"], "properties": { "executableName": { "type": "string" }, "arguments": { "oneOf": [ { "type": "array", "items": { "type": "string" } }, { "type": "string" } ] } } },
       "RunResp": { "type": "object", "required": ["ok", "message"], "properties": { "ok": { "type": "boolean" }, "status": { "type": "integer", "format": "int32", "nullable": true }, "message": { "type": "string" }, "stdout": { "type": "string" }, "stderr": { "type": "string" }, "id": { "type": "integer", "format": "int64", "nullable": true }, "pid": { "type": "integer", "format": "int32", "nullable": true } } },
       "ProcIdReq": { "type": "object", "required": ["id"], "properties": { "id": { "type": "integer", "format": "int64" } } },

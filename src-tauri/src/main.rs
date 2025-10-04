@@ -584,6 +584,70 @@ async fn api_current_directory(
 
 /* -------------------- /api/file/ -------------------- */
 #[derive(Serialize)]
+struct FileDeleteResp {
+    ok: bool,
+    message: String,
+    path: String,
+}
+
+async fn api_delete_file(
+    State(state): State<AppState>,
+    AxumPath(rel_path): AxumPath<String>,
+) -> AxumResponse {
+    // base configurable via /api/current-directory
+    let base = { state.file_path.read().await.clone() };
+
+    let Some(target) = safe_join(&base, &rel_path) else {
+        return AxumResponse::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .header(CONTENT_TYPE, mime::TEXT_PLAIN.as_ref())
+            .body(Body::from("Chemin invalide"))
+            .unwrap();
+    };
+
+    match tokio::fs::metadata(&target).await {
+        Ok(meta) => {
+            if meta.is_file() {
+                match tokio::fs::remove_file(&target).await {
+                    Ok(_) => {
+                        let payload = FileDeleteResp {
+                            ok: true,
+                            message: format!("Fichier supprimé: {}", target.display()),
+                            path: rel_path,
+                        };
+                        let json = serde_json::to_vec(&payload).unwrap();
+                        AxumResponse::builder()
+                            .status(StatusCode::OK)
+                            .header(CONTENT_TYPE, "application/json")
+                            .body(Body::from(json))
+                            .unwrap()
+                    }
+                    Err(e) => AxumResponse::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .header(CONTENT_TYPE, mime::TEXT_PLAIN.as_ref())
+                        .body(Body::from(format!(
+                            "Échec suppression {}: {e}",
+                            target.display()
+                        )))
+                        .unwrap(),
+                }
+            } else {
+                AxumResponse::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header(CONTENT_TYPE, mime::TEXT_PLAIN.as_ref())
+                    .body(Body::from("Le chemin vise un dossier, pas un fichier"))
+                    .unwrap()
+            }
+        }
+        Err(_) => AxumResponse::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(CONTENT_TYPE, mime::TEXT_PLAIN.as_ref())
+            .body(Body::from("Fichier introuvable"))
+            .unwrap(),
+    }
+}
+
+#[derive(Serialize)]
 struct FileWriteResp {
     ok: bool,
     message: String,
@@ -1558,7 +1622,7 @@ fn make_app_router(state: AppState) -> Router {
         .route("/api/useConfig", post(api_use_config))
         .route("/api/get-config", post(api_get_config))
         // /api/file/*file : base sur state.file_path (lecture si body vide, écriture sinon)
-        .route("/api/file/*file", post(api_write_file))
+          .route("/api/file/*file",post(api_write_file).delete(api_delete_file))
         // modifier la base /api/file via body { path: string }
         .route("/api/current-directory", post(api_current_directory))
         .route("/api/run", post(api_run))
