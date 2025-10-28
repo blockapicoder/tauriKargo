@@ -1,4 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// --- imports (en haut du fichier, avec les autres use) ---
+use flate2::read::GzDecoder;
+use tar::Archive;
 
 use std::env;
 use std::fs;
@@ -293,6 +296,7 @@ fn has_embedded_zip(exe_path: &Path) -> bool {
     false
 }
 
+
 /* -------------------- Transpile TS -> JS -------------------- */
 fn transpile_ts_file(ts_path: &PathBuf) -> Result<String> {
     let source = fs::read_to_string(ts_path)?;
@@ -334,6 +338,124 @@ fn transpile_ts_file(ts_path: &PathBuf) -> Result<String> {
             Ok(emitted.text)
         }
         _ => Ok(fs::read_to_string(ts_path)?),
+    }
+} 
+/* -------------------- /api/unzip -------------------- */
+// --- types + helper (placer près des autres APIs) ---
+#[derive(serde::Deserialize)]
+struct UnzipReq {
+    file: String,      // nom du .tgz (ex: "pkg-1.0.0.tgz")
+    directory: String, // sous-dossier relatif à state.file_path
+}
+
+#[derive(serde::Serialize)]
+struct UnzipResp {
+    ok: bool,
+    message: String,
+    extracted: usize,
+}
+
+/// Extraction .tgz/.tar.gz sécurisée (ignore chemins absolus, .., symlinks)
+fn extract_tgz_safe(tgz_path: &std::path::Path, out_dir: &std::path::Path) -> std::result::Result<usize, String> {
+    let file = std::fs::File::open(tgz_path)
+        .map_err(|e| format!("Ouverture {}: {e}", tgz_path.display()))?;
+    let dec = GzDecoder::new(file);
+    let mut ar = Archive::new(dec);
+
+    let mut count = 0usize;
+    let entries = ar.entries().map_err(|e| format!("Lecture archive: {e}"))?;
+    for entry_res in entries {
+        let mut entry = entry_res.map_err(|e| format!("Entrée invalide: {e}"))?;
+        let path_in_tar = entry.path().map_err(|e| format!("Chemin entrée: {e}"))?;
+        let rel = path_in_tar.as_ref();
+
+        // Pas de chemins absolus ni de .. ; pas de (hard) symlinks
+        if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            continue;
+        }
+        let kind = entry.header().entry_type();
+        if kind.is_symlink() || kind.is_hard_link() {
+            continue;
+        }
+
+        let dest = out_dir.join(rel);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Création dossier {}: {e}", parent.display()))?;
+        }
+        entry.unpack(&dest)
+            .map_err(|e| format!("Unpack {}: {e}", dest.display()))?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+// --- handler (placer avec les autres handlers) ---
+async fn api_unzip(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::Json(req): axum::Json<UnzipReq>,
+) -> (axum::http::StatusCode, axum::Json<UnzipResp>) {
+    // Base = state.file_path
+    let base = { state.file_path.read().await.clone() };
+
+    // directory doit être RELATIF à base
+    let Some(target_dir) = safe_join(&base, req.directory.trim()) else {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(UnzipResp { ok: false, message: "'directory' doit être relatif (pas de '..' ni absolu)".into(), extracted: 0 })
+        );
+    };
+
+    // file doit être un nom simple (pas de sous-chemin)
+    let p = std::path::Path::new(req.file.trim());
+    if p.components().count() != 1 {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(UnzipResp { ok: false, message: "'file' doit être un nom de fichier sans chemin".into(), extracted: 0 })
+        );
+    }
+    let lc = req.file.to_lowercase();
+    if !(lc.ends_with(".tgz") || lc.ends_with(".tar.gz")) {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(UnzipResp { ok: false, message: "Seuls .tgz ou .tar.gz sont acceptés".into(), extracted: 0 })
+        );
+    }
+
+    if let Err(e) = tokio::fs::create_dir_all(&target_dir).await {
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(UnzipResp { ok: false, message: format!("Création répertoire {}: {e}", target_dir.display()), extracted: 0 })
+        );
+    }
+    let tgz_path = target_dir.join(&req.file);
+    match tokio::fs::metadata(&tgz_path).await {
+        Ok(m) if m.is_file() => {}
+        _ => {
+            return (
+                axum::http::StatusCode::NOT_FOUND,
+                axum::Json(UnzipResp { ok: false, message: format!("Archive introuvable: {}", tgz_path.display()), extracted: 0 })
+            );
+        }
+    }
+
+    let dir_cl = target_dir.clone();
+    let tgz_cl = tgz_path.clone();
+    let res = tokio::task::spawn_blocking(move || extract_tgz_safe(&tgz_cl, &dir_cl)).await;
+
+    match res {
+        Ok(Ok(n)) => (
+            axum::http::StatusCode::OK,
+            axum::Json(UnzipResp { ok: true, message: format!("Décompressé dans {}", target_dir.display()), extracted: n }),
+        ),
+        Ok(Err(msg)) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(UnzipResp { ok: false, message: msg, extracted: 0 }),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(UnzipResp { ok: false, message: format!("Join error: {e}"), extracted: 0 }),
+        ),
     }
 }
 
@@ -1625,6 +1747,9 @@ fn make_app_router(state: AppState) -> Router {
           .route("/api/file/*file",post(api_write_file).delete(api_delete_file))
         // modifier la base /api/file via body { path: string }
         .route("/api/current-directory", post(api_current_directory))
+        // --- route (dans make_app_router) ---
+        .route("/api/unzip", post(api_unzip))
+
         .route("/api/run", post(api_run))
         .route("/api/run/status", post(api_run_status))
         .route("/api/run/stop", post(api_run_stop))
