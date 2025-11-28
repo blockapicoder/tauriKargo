@@ -1295,19 +1295,48 @@ async fn api_run_stop_all(State(state): State<AppState>) -> (StatusCode, Json<St
     )
 }
 
-// -------------------- Explorer (POST, body { path }) --------------------
+
+// -------------------- Explorer (POST, body { path, type?, maxDeep?, maxSize? }) --------------------
 use serde_json::json;
+
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+enum ExplorerMode {
+    Array,
+    Tree,
+}
 
 #[derive(Deserialize)]
 struct ExplorerReq {
     #[serde(default)]
     path: String, // relatif OU absolu
+
+    // "type": "array" | "tree"
+    #[serde(default, rename = "type")]
+    mode: Option<ExplorerMode>,
+
+    #[serde(default, rename = "maxDeep")]
+    max_deep: Option<usize>,
+
+    #[serde(default, rename = "maxSize")]
+    max_size: Option<usize>,
 }
 
 #[derive(Serialize)]
-struct ExplorerElement {
+#[serde(rename_all = "camelCase")]
+struct ArrayFileItem {
     name: String,
-    path: String, // chemin absolu pour un clic direct
+    path: String, // absolu
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TreeItem {
+    r#type: String, // "file" | "directory"
+    name: String,
+    path: String, // absolu
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<Vec<TreeItem>>,
 }
 
 // 👉 Helper : convertit un Path en chaîne "humaine" (sans \\?\ et avec UNC propre)
@@ -1330,12 +1359,144 @@ fn pretty_path_string(p: &std::path::Path) -> String {
     p.display().to_string()
 }
 
-// 👉 Utilisée partout dans /api/explorer
+// async version existante (utilisée plus haut dans ton fichier)
 async fn to_abs_string(p: &PathBuf) -> String {
     match tokio::fs::canonicalize(p).await {
         Ok(c) => pretty_path_string(&c),
         Err(_) => pretty_path_string(p),
     }
+}
+
+// sync version (pour spawn_blocking)
+fn to_abs_string_sync(p: &std::path::Path) -> String {
+    match std::fs::canonicalize(p) {
+        Ok(c) => pretty_path_string(&c),
+        Err(_) => pretty_path_string(p),
+    }
+}
+
+fn read_dir_sorted_sync(
+    dir: &std::path::Path,
+) -> Result<Vec<(String, std::path::PathBuf, std::fs::FileType)>, String> {
+    let rd = std::fs::read_dir(dir)
+        .map_err(|e| format!("Erreur lecture répertoire {}: {e}", dir.display()))?;
+
+    let mut items = Vec::new();
+    for ent in rd {
+        let ent = match ent {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let ft = match ent.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        let name = ent.file_name().to_string_lossy().to_string();
+        items.push((name, ent.path(), ft));
+    }
+
+    items.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    Ok(items)
+}
+
+/// Collecte à plat (fichiers uniquement), avec limites
+fn collect_files_array_sync(
+    dir: &std::path::Path,
+    depth_dir: usize,        // profondeur du dossier courant (root=0)
+    max_deep: Option<usize>, // profondeur max des entrées (root children = 1)
+    max_size: Option<usize>, // nombre max de fichiers retournés (global)
+    out: &mut Vec<ArrayFileItem>,
+    files_seen: &mut usize,
+) -> Result<(), String> {
+    if max_size.map(|s| *files_seen >= s).unwrap_or(false) {
+        return Ok(());
+    }
+
+    let entries = read_dir_sorted_sync(dir)?;
+    for (name, path, ft) in entries {
+        if max_size.map(|s| *files_seen >= s).unwrap_or(false) {
+            break;
+        }
+        if ft.is_symlink() {
+            continue;
+        }
+
+        let entry_depth = depth_dir + 1; // enfant direct = 1
+        if max_deep.map(|d| entry_depth > d).unwrap_or(false) {
+            continue;
+        }
+
+        if ft.is_file() {
+            out.push(ArrayFileItem {
+                name,
+                path: to_abs_string_sync(&path),
+            });
+            *files_seen += 1;
+        } else if ft.is_dir() {
+            let can_recurse = max_deep.map(|d| entry_depth < d).unwrap_or(true);
+            if can_recurse {
+                collect_files_array_sync(&path, entry_depth, max_deep, max_size, out, files_seen)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Construit un arbre (dossiers + fichiers), avec limites
+fn build_tree_sync(
+    dir: &std::path::Path,
+    depth_dir: usize,        // profondeur du dossier courant (root=0)
+    max_deep: Option<usize>, // profondeur max des entrées (root children = 1)
+    max_size: Option<usize>, // nombre max de fichiers retournés (global)
+    files_seen: &mut usize,
+) -> Result<Vec<TreeItem>, String> {
+    if max_size.map(|s| *files_seen >= s).unwrap_or(false) {
+        return Ok(vec![]);
+    }
+
+    let entries = read_dir_sorted_sync(dir)?;
+    let mut out = Vec::new();
+
+    for (name, path, ft) in entries {
+        if max_size.map(|s| *files_seen >= s).unwrap_or(false) {
+            break;
+        }
+        if ft.is_symlink() {
+            continue;
+        }
+
+        let entry_depth = depth_dir + 1;
+        if max_deep.map(|d| entry_depth > d).unwrap_or(false) {
+            continue;
+        }
+
+        if ft.is_file() {
+            out.push(TreeItem {
+                r#type: "file".into(),
+                name,
+                path: to_abs_string_sync(&path),
+                content: None,
+            });
+            *files_seen += 1;
+        } else if ft.is_dir() {
+            let can_expand = max_deep.map(|d| entry_depth < d).unwrap_or(true);
+            let content = if can_expand {
+                Some(build_tree_sync(&path, entry_depth, max_deep, max_size, files_seen)?)
+            } else {
+                None
+            };
+
+            out.push(TreeItem {
+                r#type: "directory".into(),
+                name,
+                path: to_abs_string_sync(&path),
+                content,
+            });
+        }
+    }
+
+    Ok(out)
 }
 
 async fn api_explorer_post(
@@ -1395,39 +1556,69 @@ async fn api_explorer_post(
     }
 
     if meta.is_dir() {
-        let mut entries: Vec<ExplorerElement> = Vec::new();
-        let mut rd = match tokio::fs::read_dir(&target).await {
-            Ok(r) => r,
-            Err(e) => {
+        // Backward compat :
+        // - si mode absent => comportement "tree shallow" (maxDeep=1 par défaut)
+        // - si mode présent => maxDeep illimité si non fourni
+        let mode = req.mode.unwrap_or(ExplorerMode::Tree);
+
+        let max_deep = if req.mode.is_none() {
+            Some(req.max_deep.unwrap_or(1))
+        } else {
+            req.max_deep
+        };
+
+        let max_size = req.max_size;
+
+        let target_cl = target.clone();
+        let job = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+            let mut files_seen = 0usize;
+
+            match mode {
+                ExplorerMode::Array => {
+                    let mut files = Vec::<ArrayFileItem>::new();
+                    collect_files_array_sync(
+                        &target_cl,
+                        0,
+                        max_deep,
+                        max_size,
+                        &mut files,
+                        &mut files_seen,
+                    )?;
+                    serde_json::to_value(files).map_err(|e| e.to_string())
+                }
+                ExplorerMode::Tree => {
+                    let content = build_tree_sync(&target_cl, 0, max_deep, max_size, &mut files_seen)?;
+                    serde_json::to_value(content).map_err(|e| e.to_string())
+                }
+            }
+        })
+        .await;
+
+        match job {
+            Ok(Ok(content_value)) => {
                 return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                    StatusCode::OK,
                     Json(json!({
-                        "type":"error", "message": format!("Erreur lecture répertoire: {}", e)
+                        "type": "directory",
+                        "path": abs_path,
+                        "parent": parent_abs,
+                        "content": content_value
                     })),
                 );
             }
-        };
-
-        while let Ok(Some(e)) = rd.next_entry().await {
-            let name = e.file_name().to_string_lossy().to_string();
-            let p = e.path();
-            entries.push(ExplorerElement {
-                name,
-                path: to_abs_string(&p).await,
-            });
+            Ok(Err(msg)) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "type":"error", "message": msg })),
+                );
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "type":"error", "message": format!("Join error: {e}") })),
+                );
+            }
         }
-
-        entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-
-        return (
-            StatusCode::OK,
-            Json(json!({
-                "type": "directory",
-                "path": abs_path,
-                "parent": parent_abs,
-                "content": entries
-            })),
-        );
     }
 
     (
@@ -1437,6 +1628,7 @@ async fn api_explorer_post(
         })),
     )
 }
+
 
 /* -------------------- Middleware TS -------------------- */
 async fn ts_middleware(
