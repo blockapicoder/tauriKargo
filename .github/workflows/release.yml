@@ -13,28 +13,67 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # --- NEW: Node.js + npm cache ---
-      - name: Setup Node.js
+      # Detect where the frontend lockfile actually is (prevents setup-node cache error)
+      - name: Detect assets lockfile
+        id: detect_lock
+        shell: pwsh
+        run: |
+          $lockPath = $null
+          if (Test-Path "assets/package-lock.json") { $lockPath = "assets/package-lock.json" }
+          elseif (Test-Path "src-tauri/assets/package-lock.json") { $lockPath = "src-tauri/assets/package-lock.json" }
+
+          if ($lockPath) {
+            "exists=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "path=$lockPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            Write-Host "Found lockfile: $lockPath"
+          } else {
+            "exists=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            Write-Host "No package-lock.json found in assets/ or src-tauri/assets/"
+          }
+
+      # Node setup WITH cache only when the lockfile is resolvable
+      - name: Setup Node.js (with npm cache)
+        if: steps.detect_lock.outputs.exists == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: assets/package-lock.json
+          cache-dependency-path: ${{ steps.detect_lock.outputs.path }}
 
+      - name: Setup Node.js (no cache)
+        if: steps.detect_lock.outputs.exists != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Install deps in the correct "assets" directory.
+      # Priority: root assets/ ; fallback: src-tauri/assets/
       - name: Install web dependencies in assets
+        id: webdeps
         shell: pwsh
-        working-directory: assets
         run: |
-          npm ci
-          # Optionnel (recommandé si tu as un bundler)
-          if (Test-Path package.json) {
-            $pkg = Get-Content package.json -Raw | ConvertFrom-Json
-            if ($pkg.scripts.build) {
-              npm run build
-            } else {
-              Write-Host "No build script found; skipping npm run build"
-            }
+          $assetsDir = $null
+          if (Test-Path "assets/package.json") { $assetsDir = "assets" }
+          elseif (Test-Path "src-tauri/assets/package.json") { $assetsDir = "src-tauri/assets" }
+
+          if (-not $assetsDir) {
+            Write-Error "No assets/package.json found (checked: assets/, src-tauri/assets/)."
           }
+
+          Write-Host "Using assets directory: $assetsDir"
+          "dir=$assetsDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+          Push-Location $assetsDir
+          if (Test-Path "package-lock.json") { npm ci } else { npm install }
+
+          # Build if a build script exists
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          if ($pkg.scripts -and $pkg.scripts.build) {
+            npm run build
+          } else {
+            Write-Host "No build script found; skipping npm run build"
+          }
+          Pop-Location
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -57,19 +96,25 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked --version ^1.6
 
-      # --- MODIFIED: stage assets from assets/dist if it exists, else assets/ ---
+      # Stage web assets into ./dist
       - name: Stage web assets to ./dist
         shell: pwsh
         run: |
           if (Test-Path dist) { Remove-Item -Recurse -Force dist }
           New-Item -ItemType Directory -Force dist | Out-Null
 
-          $src = "assets"
-          if (Test-Path "assets\dist\index.html") { $src = "assets\dist" }
-          elseif (Test-Path "assets\build\index.html") { $src = "assets\build" }
+          $assetsDir = "${{ steps.webdeps.outputs.dir }}"
 
+          # Prefer built output if present
+          $src = $assetsDir
+          if (Test-Path "$assetsDir\dist\index.html") { $src = "$assetsDir\dist" }
+          elseif (Test-Path "$assetsDir\build\index.html") { $src = "$assetsDir\build" }
+
+          Write-Host "Staging from: $src"
           Copy-Item "$src\*" dist -Recurse -Force
-          if (-not (Test-Path dist\index.html)) { Write-Error "index.html missing in staged dist (source=$src)" }
+          if (-not (Test-Path dist\index.html)) {
+            Write-Error "index.html missing in staged dist (source=$src)"
+          }
 
       - name: Generate icons (idempotent)
         run: cargo tauri icon src-tauri/icon.png
@@ -105,12 +150,16 @@ jobs:
         run: |
           $exe = Get-ChildItem src-tauri/target/release -Filter TauriKargo*.exe -Recurse | Select-Object -First 1
           if (-not $exe) { Write-Error "No EXE found after build." }
+
           $toml = Get-Content src-tauri\Cargo.toml -Raw
           if ($toml -match '(?m)^\s*version\s*=\s*"([^"]+)"') { $v = $Matches[1] } else { $v = "0.0.0" }
+
           $zip = "TauriKargo-$v-windows-x64.zip"
           if (Test-Path $zip) { Remove-Item $zip -Force }
+
           Compress-Archive -Path $exe.FullName -DestinationPath $zip
           $sha256 = (Get-FileHash $zip -Algorithm SHA256).Hash
+
           "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "sha256=$sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
