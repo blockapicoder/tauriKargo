@@ -56,7 +56,7 @@ const MARKER: &[u8] = b"---EMBED-ZIP-START---";
 /// Limite (par flux) des logs cumulés en mémoire (tampon circulaire)
 const LOG_CAP_BYTES: usize = 1_000_000;
 // Embarque TOUT le dossier assets/ à la compilation
-static ASSETS_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/assets");
+static ASSETS_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/assets/dist");
 
 
 
