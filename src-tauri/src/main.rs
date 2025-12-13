@@ -40,9 +40,11 @@ use deno_ast::{
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex as StdMutex;
-
+use std::io;
 // ✅ pour graceful shutdown
 use tokio::sync::oneshot;
+use include_dir::{include_dir, Dir};
+
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -53,7 +55,16 @@ const MARKER: &[u8] = b"---EMBED-ZIP-START---";
 
 /// Limite (par flux) des logs cumulés en mémoire (tampon circulaire)
 const LOG_CAP_BYTES: usize = 1_000_000;
+// Embarque TOUT le dossier assets/ à la compilation
+static ASSETS_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/assets");
 
+
+
+fn write_embedded_assets_to(code_dir: &Path) -> io::Result<()> {
+    ASSETS_DIR
+        .extract(code_dir)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+}
 /* -------------------- État & modèles -------------------- */
 #[derive(Clone)]
 struct AppState {
@@ -2295,17 +2306,21 @@ fn main() {
         eprintln!("❌ Impossible de créer {}", code_dir.display());
     }
 
-    let exe = env::current_exe().expect("exe");
-    let fallback_pathIndex = code_dir.join("index.html");
-    let fallback_pathExplorer = code_dir.join("explorer.html");
-    let has_embedding = if !fallback_pathIndex.exists() {
-        let _ = fs::write(&fallback_pathIndex, include_str!("assets/index.html"));
-        let _ = fs::write(&fallback_pathExplorer, include_str!("assets/explorer.html"));
+ let exe = env::current_exe().expect("exe");
+let fallback_pathIndex = code_dir.join("index.html");
 
-        extract_embedded_zip(&exe, &base_dir)
-    } else {
-        has_embedded_zip(&exe)
-    };
+
+let has_embedding = if !fallback_pathIndex.exists() {
+    // Matérialise TOUT le contenu de assets/ dans code_dir
+    let _ = fs::create_dir_all(&code_dir);
+    let _ = write_embedded_assets_to(&code_dir);
+
+    // Votre logique existante
+    extract_embedded_zip(&exe, &base_dir)
+} else {
+    has_embedded_zip(&exe)
+};
+
 
     run_tauri_serving_dir(code_dir, has_embedding);
 }

@@ -1,6 +1,9 @@
 {
   "build": {
-    "beforeBuildCommand": "cargo tauri icon src-tauri/icon.png",
+  "beforeBuildCommand": {
+      "script": "cargo tauri icon icon.png",
+      "cwd": "."
+    },
     "beforeDevCommand": "",
     "devPath": "../dist",
     "distDir": "../dist"
