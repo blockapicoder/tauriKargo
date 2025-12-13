@@ -13,6 +13,88 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # --- Detect where assets & lockfile actually are ---
+      - name: Detect frontend location
+        id: detect
+        shell: pwsh
+        run: |
+          $assetsDir = $null
+          if (Test-Path "assets\package.json") { $assetsDir = "assets" }
+          elseif (Test-Path "src-tauri\assets\package.json") { $assetsDir = "src-tauri\assets" }
+          if (-not $assetsDir) { Write-Error "No assets/package.json found (checked assets/ and src-tauri/assets/)." }
+
+          $lockPath = $null
+          if (Test-Path "$assetsDir\package-lock.json") { $lockPath = "$assetsDir\package-lock.json" }
+
+          "assetsDir=$assetsDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          if ($lockPath) {
+            "hasLock=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "lockPath=$lockPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            "hasLock=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+
+          Write-Host "assetsDir=$assetsDir"
+          Write-Host "lockPath=$lockPath"
+
+      # --- Node.js setup (cache only if lockfile is resolvable) ---
+      - name: Setup Node.js (with npm cache)
+        if: steps.detect.outputs.hasLock == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ${{ steps.detect.outputs.lockPath }}
+
+      - name: Setup Node.js (no cache)
+        if: steps.detect.outputs.hasLock != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # --- Install + build frontend in assets ---
+      - name: Install & build frontend (assets)
+        shell: pwsh
+        run: |
+          $assetsDir = "${{ steps.detect.outputs.assetsDir }}"
+
+          Push-Location $assetsDir
+
+          if (Test-Path "package-lock.json") { npm ci } else { npm install }
+
+          # We REQUIRE a built output to avoid staging node_modules into distDir
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          if (-not $pkg.scripts -or -not $pkg.scripts.build) {
+            Write-Error "package.json has no build script. Add scripts.build or provide a prebuilt dist/ folder."
+          }
+
+          npm run build
+
+          Pop-Location
+
+      # --- Stage ONLY built output into ./dist (never copy node_modules) ---
+      - name: Stage web assets to ./dist (ONLY built output)
+        shell: pwsh
+        run: |
+          $assetsDir = "${{ steps.detect.outputs.assetsDir }}"
+
+          if (Test-Path dist) { Remove-Item -Recurse -Force dist }
+          New-Item -ItemType Directory -Force dist | Out-Null
+
+          $src = $null
+          if (Test-Path "$assetsDir\dist\index.html") { $src = "$assetsDir\dist" }
+          elseif (Test-Path "$assetsDir\build\index.html") { $src = "$assetsDir\build" }
+
+          if (-not $src) {
+            Write-Error "Frontend build output missing. Expected $assetsDir/dist/index.html or $assetsDir/build/index.html"
+          }
+
+          Write-Host "Staging from: $src"
+          Copy-Item "$src\*" dist -Recurse -Force
+
+          if (-not (Test-Path dist\index.html)) { Write-Error "index.html missing in staged dist" }
+          if (Test-Path dist\node_modules) { Write-Error "Invalid staging: dist contains node_modules" }
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -34,16 +116,32 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked --version ^1.6
 
-      - name: Stage web assets to ./dist
-        shell: pwsh
-        run: |
-          if (Test-Path dist) { Remove-Item -Recurse -Force dist }
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item src-tauri\assets\* dist -Recurse -Force
-          if (-not (Test-Path dist\index.html)) { Write-Error "index.html missing in staged dist" }
-
       - name: Generate icons (idempotent)
         run: cargo tauri icon src-tauri/icon.png
+
+      # --- Force CI config to point distDir to ../dist (root dist folder) ---
+      - name: Create CI tauri config (distDir -> ../dist)
+        id: tauri_cfg
+        shell: pwsh
+        run: |
+          $in  = "src-tauri\tauri.ci.json"
+          $out = "src-tauri\tauri.ci.effective.json"
+
+          if (-not (Test-Path $in)) { Write-Error "Missing $in" }
+
+          $cfg = Get-Content $in -Raw | ConvertFrom-Json
+
+          if (-not $cfg.build) { $cfg | Add-Member -NotePropertyName build -NotePropertyValue (@{}) }
+          $cfg.build.distDir = "../dist"
+
+          # Optional: if your config sets devPath to something invalid for CI, you can also set:
+          # $cfg.build.devPath = "http://localhost:1420"
+
+          $json = $cfg | ConvertTo-Json -Depth 100
+          Set-Content -Path $out -Value $json -Encoding UTF8
+
+          "config=$out" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Wrote effective config: $out (build.distDir=../dist)"
 
       - name: Prepare code signing (optional)
         shell: pwsh
@@ -68,7 +166,7 @@ jobs:
           TAURI_BUNDLE_TARGETS: app
         with:
           bundles: app
-          args: --config src-tauri/tauri.ci.json
+          args: --config ${{ steps.tauri_cfg.outputs.config }}
 
       - name: Prepare release asset (zip + sha256)
         id: prep
@@ -76,12 +174,16 @@ jobs:
         run: |
           $exe = Get-ChildItem src-tauri/target/release -Filter TauriKargo*.exe -Recurse | Select-Object -First 1
           if (-not $exe) { Write-Error "No EXE found after build." }
+
           $toml = Get-Content src-tauri\Cargo.toml -Raw
           if ($toml -match '(?m)^\s*version\s*=\s*"([^"]+)"') { $v = $Matches[1] } else { $v = "0.0.0" }
+
           $zip = "TauriKargo-$v-windows-x64.zip"
           if (Test-Path $zip) { Remove-Item $zip -Force }
+
           Compress-Archive -Path $exe.FullName -DestinationPath $zip
           $sha256 = (Get-FileHash $zip -Algorithm SHA256).Hash
+
           "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "sha256=$sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
