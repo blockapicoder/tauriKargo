@@ -43,6 +43,7 @@ class DialogueAjoutApplication {
     applications?: tools.Applications
     async valider() {
         await tools.ajouterApplication(this.name, { code: this.path })
+        this.parent.explorateur.activerLanceur = true
         this.parent.explorateur.noeuds = this.parent.explorateur.noeuds.filter((e) => e !== this.parent)
         this.parent.modal = undefined
 
