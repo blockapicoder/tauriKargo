@@ -21,7 +21,7 @@ export async function enregistrerApplications(applications: Applications) {
     await tauriKargoClient.writeFileText(APPLICATIONS_FILE, JSON.stringify(applications, null, 2))
 }
 export async function recupererApplications() {
-    let applications: Applications = { applications: {}, executable: "", packagerOutput: "" }
+    let applications: Applications = { applications: {}, executable: ".", packagerOutput: "." }
     try {
         const src = await tauriKargoClient.readFileText(APPLICATIONS_FILE)
         applications = JSON.parse(src)
