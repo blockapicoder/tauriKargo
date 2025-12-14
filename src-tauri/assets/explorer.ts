@@ -71,7 +71,7 @@ defineVue(DialogueAjoutApplication, {
         {
             kind: "flow", orientation: "row", gap: 10, children: [
                 { kind: "staticButton", label: "Valider", action: "valider", width: '50%', enable: "autoriserValider" },
-                { kind: "staticButton", label: "Annuler", action: "valider", width: '50%' }
+                { kind: "staticButton", label: "Annuler", action: "annuler", width: '50%' }
             ]
         }
     ]
