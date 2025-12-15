@@ -35,7 +35,32 @@ const timer = setInterval(async () => {
         executions.lanceur.messages = executions.messages
     }
 }, 600);
+export class ModalPackager {
+    lanceur!:Lanceur;
+    nomExecutable!: string 
+    async valider() {
+        this.lanceur.packager(this.nomExecutable)
+         this.lanceur.modelPackager = undefined
 
+    }
+    annuler() {
+        this.lanceur.modelPackager = undefined
+
+    }
+
+}
+defineVue(ModalPackager,{
+    kind:"flow",
+    orientation:"column",
+    gap:25,
+    children:[
+        {kind:'input', name:"nomExecutable"},
+        {kind:"flow" , orientation:"row",gap:10,children:[
+            {kind:"staticButton",action:"annuler",label:"Annuler",width:"50%"},
+            {kind:"staticButton",action:"valider",label:"Valider",width:"50%"}
+        ]}
+    ]
+})
 export class Lanceur {
     applications!: tools.Applications
     names!: string[]
@@ -45,6 +70,7 @@ export class Lanceur {
     executablePath: string = ""
     packagerOutputPath: string = ""
     explorateur?: Explorateur
+    modelPackager?:ModalPackager
     constructor() {
 
     }
@@ -90,17 +116,24 @@ export class Lanceur {
     explorer() {
         return new Explorateur()
     }
-    async packager() {
+    creerModalPackager() {
+        const name = this.names[this.selections[0]]
+        this.modelPackager = new ModalPackager()
+        this.modelPackager.nomExecutable = `${name}.exe`
+        this.modelPackager.lanceur = this
+        return this.modelPackager
+    }
+    async packager(nomExecutable:string ) {
         const name = this.names[this.selections[0]]
         executions.messages += `\n✅ Packaging lancé sur ${name} `;
         try {
             const r = await tools.tauriKargoClient.embed({
                 code: this.applications.applications[name].code,
                 executable: this.applications.executable,
-                output: `${this.applications.packagerOutput}\\${name}.exe`
+                output: `${this.applications.packagerOutput}\\${nomExecutable}`
             })
             if (r.ok) {
-                executions.messages += `\n✅ Packaging ok sur ${name}`;
+                executions.messages += `\n✅ Packaging ok sur ${name} executable ${nomExecutable}`;
             } else {
                 executions.messages += `\n❌ Packaging ko sur ${name} : ${r.message}`;
             }
@@ -136,7 +169,7 @@ export class Lanceur {
                     window: w
 
                 }
-                executions.messages += `✅ Serveur lancé sur ${name} ${url}\n🪟 Ouverture (target = ${execution.port})...`;
+                executions.messages += `\n✅ Serveur lancé sur ${name} ${url}\n🪟 Ouverture (target = ${execution.port})...`;
 
                 executions.executions.push(execution)
                 this.messages = executions.messages
@@ -156,7 +189,7 @@ defineVue(Lanceur, (vue) => {
             vue.staticBootVue({ factory: "explorer", label: "Explorer" })
             vue.staticButton({ action: "executer", label: "Executer", enable: "activerAction" })
             vue.staticButton({ action: "supprimer", label: "Supprimer", enable: "activerAction" })
-            vue.staticButton({ action: "packager", label: "Packager", enable: "activerAction" })
+            vue.dialog({ name:"modelPackager",action:"creerModalPackager", label: "Packager", enable: "activerAction" , width:300,height:150})
         })
         vue.flow({ orientation: "row", gap: 10 }, () => {
             vue.label("executablePath", { width: "80%" })
