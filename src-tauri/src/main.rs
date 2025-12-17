@@ -2310,17 +2310,19 @@ fn main() {
 let fallback_pathIndex = code_dir.join("index.html");
 
 
-let has_embedding = if !fallback_pathIndex.exists() {
+let has_embedding = has_embedded_zip(&exe);
+
+if !fallback_pathIndex.exists() {
     // Matérialise TOUT le contenu de assets/ dans code_dir
-    let _ = fs::create_dir_all(&code_dir);
+    let has_embedding = extract_embedded_zip(&exe, &base_dir);
+    if (!has_embedding) {
+       let _ = fs::create_dir_all(&code_dir);
     let _ = write_embedded_assets_to(&code_dir);
+    } 
 
     // Votre logique existante
-    extract_embedded_zip(&exe, &base_dir)
-} else {
-    has_embedded_zip(&exe)
-};
 
+} 
 
-    run_tauri_serving_dir(code_dir, has_embedding);
+    run_tauri_serving_dir(code_dir, has_embedded_zip(&exe));
 }
