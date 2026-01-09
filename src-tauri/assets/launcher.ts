@@ -36,11 +36,11 @@ const timer = setInterval(async () => {
     }
 }, 600);
 export class ModalPackager {
-    lanceur!:Lanceur;
-    nomExecutable!: string 
+    lanceur!: Lanceur;
+    nomExecutable!: string
     async valider() {
         this.lanceur.packager(this.nomExecutable)
-         this.lanceur.modelPackager = undefined
+        this.lanceur.modelPackager = undefined
 
     }
     annuler() {
@@ -49,28 +49,31 @@ export class ModalPackager {
     }
 
 }
-defineVue(ModalPackager,{
-    kind:"flow",
-    orientation:"column",
-    gap:25,
-    children:[
-        {kind:'input', name:"nomExecutable"},
-        {kind:"flow" , orientation:"row",gap:10,children:[
-            {kind:"staticButton",action:"annuler",label:"Annuler",width:"50%"},
-            {kind:"staticButton",action:"valider",label:"Valider",width:"50%"}
-        ]}
+defineVue(ModalPackager, {
+    kind: "flow",
+    orientation: "column",
+    gap: 25,
+    children: [
+        { kind: 'input', name: "nomExecutable" },
+        {
+            kind: "flow", orientation: "row", gap: 10, children: [
+                { kind: "staticButton", action: "annuler", label: "Annuler", width: "50%" },
+                { kind: "staticButton", action: "valider", label: "Valider", width: "50%" }
+            ]
+        }
     ]
 })
 export class Lanceur {
     applications!: tools.Applications
     names!: string[]
+    applicationChemin = ""
     selections: number[] = []
     activerAction: boolean = false
     messages: string = ""
     executablePath: string = ""
     packagerOutputPath: string = ""
     explorateur?: Explorateur
-    modelPackager?:ModalPackager
+    modelPackager?: ModalPackager
     constructor() {
 
     }
@@ -111,6 +114,12 @@ export class Lanceur {
     }
     selectionnerName() {
         this.activerAction = (this.selections.length > 0)
+        this.applicationChemin = ""
+        if (this.activerAction) {
+            const idx = this.selections[0]
+            const name = this.names[idx]
+            this.applicationChemin = this.applications.applications[name].code
+        }
 
     }
     explorer() {
@@ -123,7 +132,7 @@ export class Lanceur {
         this.modelPackager.lanceur = this
         return this.modelPackager
     }
-    async packager(nomExecutable:string ) {
+    async packager(nomExecutable: string) {
         const name = this.names[this.selections[0]]
         executions.messages += `\n✅ Packaging lancé sur ${name} `;
         try {
@@ -189,8 +198,9 @@ defineVue(Lanceur, (vue) => {
             vue.staticBootVue({ factory: "explorer", label: "Explorer" })
             vue.staticButton({ action: "executer", label: "Executer", enable: "activerAction" })
             vue.staticButton({ action: "supprimer", label: "Supprimer", enable: "activerAction" })
-            vue.dialog({ name:"modelPackager",action:"creerModalPackager", label: "Packager", enable: "activerAction" , width:300,height:150})
+            vue.dialog({ name: "modelPackager", action: "creerModalPackager", label: "Packager", enable: "activerAction", width: 300, height: 150 })
         })
+        vue.label("applicationChemin", { width: "100%" })
         vue.flow({ orientation: "row", gap: 10 }, () => {
             vue.label("executablePath", { width: "80%" })
             vue.staticBootVue({ factory: "explorerExecutablePath", label: "Explorer", width: "20%" })

@@ -640,6 +640,72 @@ async fn api_get_config(State(state): State<AppState>) -> (StatusCode, Json<GetC
         }),
     )
 }
+/* -------------------- /api/directory/create -------------------- */
+#[derive(Deserialize)]
+struct CreateDirReq {
+    path: String, // relatif à state.file_path, ex: "a/b/c"
+}
+
+#[derive(Serialize)]
+struct CreateDirResp {
+    ok: bool,
+    message: String,
+    created: Option<String>, // chemin absolu (joli)
+}
+
+async fn api_directory_create(
+    State(state): State<AppState>,
+    Json(req): Json<CreateDirReq>,
+) -> (StatusCode, Json<CreateDirResp>) {
+    let base = { state.file_path.read().await.clone() };
+
+    let raw = req.path.trim();
+    if raw.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(CreateDirResp {
+                ok: false,
+                message: "'path' est requis".into(),
+                created: None,
+            }),
+        );
+    }
+
+    // path doit être RELATIF à base, autorise "chemin1/chemin2"
+    let Some(target_dir) = safe_join(&base, raw) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(CreateDirResp {
+                ok: false,
+                message: "'path' doit être relatif (pas de '..' ni absolu)".into(),
+                created: None,
+            }),
+        );
+    };
+
+    // Crée récursivement tous les dossiers manquants
+    match tokio::fs::create_dir_all(&target_dir).await {
+        Ok(_) => {
+            let created_abs = to_abs_string(&target_dir).await;
+            (
+                StatusCode::OK,
+                Json(CreateDirResp {
+                    ok: true,
+                    message: "Répertoire(s) créé(s)".into(),
+                    created: Some(created_abs),
+                }),
+            )
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(CreateDirResp {
+                ok: false,
+                message: format!("Échec création {}: {e}", target_dir.display()),
+                created: None,
+            }),
+        ),
+    }
+}
 
 /* -------------------- /api/current-directory -------------------- */
 #[derive(Deserialize)]
@@ -1950,6 +2016,8 @@ fn make_app_router(state: AppState) -> Router {
           .route("/api/file/*file",post(api_write_file).delete(api_delete_file))
         // modifier la base /api/file via body { path: string }
         .route("/api/current-directory", post(api_current_directory))
+        .route("/api/directory/create", post(api_directory_create))
+
         // --- route (dans make_app_router) ---
         .route("/api/unzip", post(api_unzip))
 
