@@ -1371,6 +1371,111 @@ async fn api_run_stop_all(State(state): State<AppState>) -> (StatusCode, Json<St
         }),
     )
 }
+/* -------------------- /api/typescript/transpile -------------------- */
+#[derive(Deserialize)]
+struct TsTranspileReq {
+    src: String,
+}
+
+#[derive(Serialize)]
+struct TsTranspileOk {
+    ok: bool,
+    src: String,
+}
+
+#[derive(Serialize)]
+struct ApiErrorResp {
+    ok: bool,
+    message: String,
+}
+
+async fn api_typescript_transpile(
+    Json(payload): Json<TsTranspileReq>,
+) -> AxumResponse {
+    let src = payload.src;
+
+    if src.trim().is_empty() {
+        let json = serde_json::to_vec(&ApiErrorResp {
+            ok: false,
+            message: "'src' est requis".into(),
+        }).unwrap();
+
+        return AxumResponse::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(json))
+            .unwrap();
+    }
+
+    let job = tokio::task::spawn_blocking(move || -> std::result::Result<String, String> {
+        let spec = ModuleSpecifier::parse("file:///transpile.ts")
+            .map_err(|e| format!("Specifier invalide: {e}"))?;
+
+        let parsed = parse_module(ParseParams {
+            specifier: spec,
+            text: Arc::<str>::from(src),
+            media_type: MediaType::TypeScript,
+            capture_tokens: false,
+            maybe_syntax: None,
+            scope_analysis: false,
+        })
+        .map_err(|e| format!("Parse error: {e}"))?;
+
+        let emitted = parsed
+            .transpile(
+                &TranspileOptions {
+                    use_ts_decorators: false,
+                    use_decorators_proposal: false,
+                    emit_metadata: false,
+                    verbatim_module_syntax: false,
+                    ..Default::default()
+                },
+                &TranspileModuleOptions { ..Default::default() },
+                &EmitOptions { ..Default::default() },
+            )
+            .map_err(|e| format!("Transpile error: {e}"))?
+            .into_source();
+
+        Ok(emitted.text)
+    }).await;
+
+    match job {
+        Ok(Ok(out_js)) => {
+            let ok = TsTranspileOk { ok:true,src: out_js };
+            let json = serde_json::to_vec(&ok).unwrap();
+
+            AxumResponse::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(json))
+                .unwrap()
+        }
+        Ok(Err(msg)) => {
+            let json = serde_json::to_vec(&ApiErrorResp {
+                ok: false,
+                message: msg,
+            }).unwrap();
+
+            AxumResponse::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(json))
+                .unwrap()
+        }
+        Err(e) => {
+            let json = serde_json::to_vec(&ApiErrorResp {
+                ok: false,
+                message: format!("Join error: {e}"),
+            }).unwrap();
+
+            AxumResponse::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(json))
+                .unwrap()
+        }
+    }
+}
 
 
 // -------------------- Explorer (POST, body { path, type?, maxDeep?, maxSize? }) --------------------
@@ -2017,6 +2122,8 @@ fn make_app_router(state: AppState) -> Router {
         // modifier la base /api/file via body { path: string }
         .route("/api/current-directory", post(api_current_directory))
         .route("/api/directory/create", post(api_directory_create))
+        .route("/api/typescript/transpile", post(api_typescript_transpile))
+
 
         // --- route (dans make_app_router) ---
         .route("/api/unzip", post(api_unzip))
