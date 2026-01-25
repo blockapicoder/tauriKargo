@@ -34,9 +34,11 @@ use http_body_util::BodyExt as _;
 use tokio::io::AsyncWriteExt;
 
 use deno_ast::{
-    parse_module, EmitOptions, MediaType, ModuleSpecifier, ParseParams, TranspileModuleOptions,
-    TranspileOptions,
+    parse_program,parse_module, EmitOptions, MediaType, ModuleSpecifier, ParseParams, TranspileModuleOptions,
+    TranspileOptions, StartSourcePos, SourceRanged
 };
+
+use deno_ast::view::{self, NodeTrait};
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex as StdMutex;
@@ -2123,6 +2125,8 @@ fn make_app_router(state: AppState) -> Router {
         .route("/api/current-directory", post(api_current_directory))
         .route("/api/directory/create", post(api_directory_create))
         .route("/api/typescript/transpile", post(api_typescript_transpile))
+        .route("/api/typescript/ast", post(api_typescript_ast))
+
 
 
         // --- route (dans make_app_router) ---
@@ -2273,6 +2277,244 @@ struct NewServerResp {
                 message: msg,
             }),
         ),
+    }
+}
+
+
+#[derive(Deserialize)]
+struct TsAstReq {
+    /// Chemin relatif au dossier `state.root` (ex: "src/main.ts")
+    path: String,
+}
+
+#[derive(Serialize)]
+struct TsAstOk {
+    ok: bool,
+    ast: AstNode,
+}
+
+#[derive(Serialize)]
+struct TsAstErr {
+    ok: bool,
+    error: String,
+    position: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AstNode {
+    kind: String,
+    start: usize, // byte offset UTF-8 (inclus)
+    end: usize,   // byte offset UTF-8 (exclus)
+    children: Vec<AstNode>,
+}
+
+fn build_ast_from_view(node: view::Node<'_>) -> AstNode {
+    // deno_ast recommande d’utiliser StartSourcePos pour convertir en offsets
+    let byte_range = node.range().as_byte_range(StartSourcePos::START_SOURCE_POS);
+
+    let children = node
+        .children()
+        .into_iter()
+        .map(build_ast_from_view)
+        .collect::<Vec<_>>();
+
+    AstNode {
+        kind: format!("{:?}", node.kind()),
+        start: byte_range.start,
+        end: byte_range.end,
+        children,
+    }
+}
+async fn api_typescript_ast(
+    State(state): State<AppState>,
+    Json(req): Json<TsAstReq>,
+) -> AxumResponse {
+    let rel = req.path.trim();
+    if rel.is_empty() {
+        let json = serde_json::to_vec(&TsAstErr {
+            ok: false,
+            error: "'path' est requis".into(),
+            position: 0,
+        })
+        .unwrap();
+
+        return AxumResponse::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(json))
+            .unwrap();
+    }
+
+    // ✅ Règle : path vide -> CWD ; relatif -> CWD + rel ; absolu -> tel quel (comme /api/explorer)
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let target: PathBuf = {
+        let raw = req.path.trim();
+        if raw.is_empty() {
+            cwd.clone()
+        } else {
+            let p = PathBuf::from(raw);
+            if p.is_absolute() {
+                p
+            } else {
+                cwd.join(p)
+            }
+        }
+    };
+
+    // Canonicalize si possible (sinon garder tel quel)
+    let abs_path = tokio::fs::canonicalize(&target).await.unwrap_or(target.clone());
+
+    // Doit exister et être un fichier
+    let meta = match tokio::fs::metadata(&abs_path).await {
+        Ok(m) => m,
+        Err(e) => {
+            let json = serde_json::to_vec(&TsAstErr {
+                ok: false,
+                error: format!("Introuvable: {e}"),
+                position: 0,
+            })
+            .unwrap();
+
+            return AxumResponse::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(json))
+                .unwrap();
+        }
+    };
+
+    if !meta.is_file() {
+        let json = serde_json::to_vec(&TsAstErr {
+            ok: false,
+            error: "Le chemin fourni n'est pas un fichier".into(),
+            position: 0,
+        })
+        .unwrap();
+
+        return AxumResponse::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(json))
+            .unwrap();
+    }
+
+    // Lire le fichier
+    let src = match tokio::fs::read_to_string(&abs_path).await {
+        Ok(s) => s,
+        Err(e) => {
+            let json = serde_json::to_vec(&TsAstErr {
+                ok: false,
+                error: format!("Lecture impossible {}: {e}", abs_path.display()),
+                position: 0,
+            })
+            .unwrap();
+
+            return AxumResponse::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(json))
+                .unwrap();
+        }
+    };
+
+    let media_type = MediaType::from_path(&abs_path);
+    let spec = match ModuleSpecifier::from_file_path(&abs_path) {
+        Ok(u) => u,
+        Err(_) => {
+            let json = serde_json::to_vec(&TsAstErr {
+                ok: false,
+                error: format!("Chemin non convertible en URL file:// : {}", abs_path.display()),
+                position: 0,
+            })
+            .unwrap();
+
+            return AxumResponse::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(json))
+                .unwrap();
+        }
+    };
+
+    // Parse + build AST en spawn_blocking
+    let job = tokio::task::spawn_blocking(move || -> Result<AstNode, TsAstErr> {
+        let parsed = parse_program(ParseParams {
+            specifier: spec,
+            text: std::sync::Arc::<str>::from(src),
+            media_type,
+            capture_tokens: false,
+            maybe_syntax: None,
+            scope_analysis: false,
+        })
+        .map_err(|diag| {
+            let pos = diag
+                .range
+                .as_byte_range(StartSourcePos::START_SOURCE_POS)
+                .start;
+            TsAstErr {
+                ok: false,
+                error: diag.to_string(),
+                position: pos,
+            }
+        })?;
+
+        // Construire ProgramInfo minimal
+        let program = parsed.program(); // Arc<Program>
+
+        let program_ref = match program.as_ref() {
+            deno_ast::swc::ast::Program::Module(m) => deno_ast::view::ProgramRef::Module(m),
+            deno_ast::swc::ast::Program::Script(s) => deno_ast::view::ProgramRef::Script(s),
+        };
+
+        let info = view::ProgramInfo {
+            program: program_ref,
+            text_info: None,
+            tokens: None,
+            comments: None,
+        };
+
+        let ast = view::with_ast_view(info, |p| {
+            let root_node: view::Node = p.into();
+            build_ast_from_view(root_node)
+        });
+
+        Ok(ast)
+    })
+    .await;
+
+    match job {
+        Ok(Ok(ast)) => {
+            let json = serde_json::to_vec(&TsAstOk { ok: true, ast }).unwrap();
+            AxumResponse::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(json))
+                .unwrap()
+        }
+        Ok(Err(err)) => {
+            let status = StatusCode::BAD_REQUEST;
+            let json = serde_json::to_vec(&err).unwrap();
+            AxumResponse::builder()
+                .status(status)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(json))
+                .unwrap()
+        }
+        Err(e) => {
+            let json = serde_json::to_vec(&TsAstErr {
+                ok: false,
+                error: format!("Join error: {e}"),
+                position: 0,
+            })
+            .unwrap();
+
+            AxumResponse::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(json))
+                .unwrap()
+        }
     }
 }
 
@@ -2490,7 +2732,7 @@ let has_embedding = has_embedded_zip(&exe);
 if !fallback_pathIndex.exists() {
     // Matérialise TOUT le contenu de assets/ dans code_dir
     let has_embedding = extract_embedded_zip(&exe, &base_dir);
-    if (!has_embedding) {
+    if !has_embedding {
        let _ = fs::create_dir_all(&code_dir);
     let _ = write_embedded_assets_to(&code_dir);
     } 

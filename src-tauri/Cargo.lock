@@ -118,6 +118,7 @@ dependencies = [
  "open 5.3.2",
  "serde",
  "serde_json",
+ "swc_common",
  "tar",
  "tauri",
  "tauri-build",
@@ -861,9 +862,9 @@ dependencies = [
 
 [[package]]
 name = "data-encoding"
-version = "2.9.0"
+version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a2330da5de22e8a3cb63252ce2abb30116bf5265e89c0e01bc17015ce30a476"
+checksum = "d7a1e2f27636f116493b8b860f5546edb47c8d8f8ea73e1d2a20be88e28d1fea"
 
 [[package]]
 name = "data-url"
@@ -1044,6 +1045,8 @@ version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "569b85f94c1e7d1065874115193cf081d658ebb01213d54fda357516837a17fc"
 dependencies = [
+ "allocator-api2",
+ "bumpalo",
  "num-bigint",
  "rustc-hash",
  "swc_atoms",
@@ -1991,9 +1994,9 @@ dependencies = [
 
 [[package]]
 name = "if_chain"
-version = "1.0.2"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb56e1aa765b4b4f3aadfab769793b7087bb03a4ea4920644a6d238e2df5b9ed"
+checksum = "cd62e6b5e86ea8eeeb8db1de02880a6abc01a397b2ebb64b5d74ac255318f5cb"
 
 [[package]]
 name = "ignore"
@@ -3566,9 +3569,9 @@ dependencies = [
 
 [[package]]
 name = "sourcemap"
-version = "9.2.2"
+version = "9.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e22afbcb92ce02d23815b9795523c005cb9d3c214f8b7a66318541c240ea7935"
+checksum = "314d62a489431668f719ada776ca1d49b924db951b7450f8974c9ae51ab05ad7"
 dependencies = [
  "base64-simd",
  "bitvec",
@@ -4043,9 +4046,9 @@ dependencies = [
 
 [[package]]
 name = "swc_macros_common"
-version = "0.3.13"
+version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f486687bfb7b5c560868f69ed2d458b880cebc9babebcb67e49f31b55c5bf847"
+checksum = "27e18fbfe83811ffae2bb23727e45829a0d19c6870bced7c0f545cc99ad248dd"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4082,7 +4085,7 @@ dependencies = [
  "Inflector",
  "proc-macro2",
  "quote",
- "swc_macros_common 0.3.13",
+ "swc_macros_common 0.3.14",
  "syn 2.0.101",
 ]
 
@@ -4839,9 +4842,9 @@ checksum = "75b844d17643ee918803943289730bec8aac480150456169e647ed0b576ba539"
 
 [[package]]
 name = "unicode-id"
-version = "0.3.5"
+version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10103c57044730945224467c09f71a4db0071c123a0648cc3e818913bde6b561"
+checksum = "70ba288e709927c043cbe476718d37be306be53fb1fafecd0dbe36d072be2580"
 
 [[package]]
 name = "unicode-id-start"
