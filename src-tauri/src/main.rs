@@ -147,6 +147,68 @@ fn default_served_base_dir() -> PathBuf {
     exe_dir.join(stem)
 }
 
+#[derive(Deserialize)]
+struct StartIndexConfig {
+    start: Option<String>,
+}
+
+fn sanitize_start_path(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let rel = Path::new(trimmed);
+    if rel.is_absolute() {
+        return None;
+    }
+    if rel
+        .components()
+        .any(|c| matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_)))
+    {
+        return None;
+    }
+
+    Some(rel.to_string_lossy().replace('\\', "/"))
+}
+
+fn resolve_start_entry(root: &Path) -> Option<String> {
+    let index_json = root.join("index.json");
+    if index_json.is_file() {
+        match fs::read_to_string(&index_json) {
+            Ok(content) => match serde_json::from_str::<StartIndexConfig>(&content) {
+                Ok(cfg) => {
+                    if let Some(start) = cfg.start.as_deref().and_then(sanitize_start_path) {
+                        let target = root.join(&start);
+                        if target.is_file() {
+                            return Some(start);
+                        }
+                        eprintln!(
+                            "⚠️ index.json trouvé mais la cible 'start' est introuvable: {}",
+                            target.display()
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("⚠️ index.json invalide ({}): {}", index_json.display(), e);
+                }
+            },
+            Err(e) => {
+                eprintln!("⚠️ Impossible de lire {}: {}", index_json.display(), e);
+            }
+        }
+    }
+
+    for candidate in ["index.ts", "index.html"] {
+        let path = root.join(candidate);
+        if path.is_file() {
+            return Some(candidate.to_string());
+        }
+    }
+
+    None
+}
+
 fn push_capped(buf: &mut Vec<u8>, chunk: &[u8]) {
     if chunk.is_empty() {
         return;
@@ -2039,53 +2101,32 @@ async fn static_handler(
             .unwrap();
     }
 
-    // Cas "/" : d'abord essayer index.html
-    let index = root.join("index.html");
-    if index.is_file() {
-        match tokio::fs::read(&index).await {
-            Ok(bytes) => {
-                return AxumResponse::builder()
-                    .status(StatusCode::OK)
-                    .header(CONTENT_TYPE, "text/html; charset=utf-8")
-                    .body(Body::from(bytes))
-                    .unwrap();
-            }
-            Err(e) => {
-                let msg = format!("Erreur de lecture {}: {e}", index.display());
-                eprintln!("❌ {msg}");
-                return AxumResponse::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .header(CONTENT_TYPE, mime::TEXT_PLAIN.as_ref())
-                    .body(Body::from(msg))
-                    .unwrap();
+    // Cas "/" : résoudre l'entrée dans l'ordre index.json(start) -> index.ts -> index.html
+    if let Some(entry) = resolve_start_entry(&root) {
+        let entry_path = root.join(&entry);
+        let lower = entry.to_ascii_lowercase();
+
+        if lower.ends_with(".html") || lower.ends_with(".htm") {
+            match tokio::fs::read(&entry_path).await {
+                Ok(bytes) => {
+                    return AxumResponse::builder()
+                        .status(StatusCode::OK)
+                        .header(CONTENT_TYPE, "text/html; charset=utf-8")
+                        .body(Body::from(bytes))
+                        .unwrap();
+                }
+                Err(e) => {
+                    let msg = format!("Erreur de lecture {}: {e}", entry_path.display());
+                    eprintln!("❌ {msg}");
+                    return AxumResponse::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .header(CONTENT_TYPE, mime::TEXT_PLAIN.as_ref())
+                        .body(Body::from(msg))
+                        .unwrap();
+                }
             }
         }
-    }
 
-    // Fallback demandé : si pas d'index.html, chercher index.ts puis index.js
-    let index_ts = root.join("index.ts");
-    let index_js = root.join("index.js");
-
-    let use_boot = if tokio::fs::metadata(&index_ts)
-        .await
-        .ok()
-        .map(|m| m.is_file())
-        .unwrap_or(false)
-    {
-        Some("index.ts")
-    } else if tokio::fs::metadata(&index_js)
-        .await
-        .ok()
-        .map(|m| m.is_file())
-        .unwrap_or(false)
-    {
-        Some("index.js")
-    } else {
-        None
-    };
-
-    if let Some(entry) = use_boot {
-        // HTML minimal qui charge le module juste après l'ouverture de <body>
         let html = format!(
             r#"<!doctype html>
 <meta charset="utf-8">
@@ -2723,23 +2764,16 @@ fn main() {
         eprintln!("❌ Impossible de créer {}", code_dir.display());
     }
 
- let exe = env::current_exe().expect("exe");
-let fallback_pathIndex = code_dir.join("index.html");
+    let exe = env::current_exe().expect("exe");
+    let has_embedding = has_embedded_zip(&exe);
 
+    if resolve_start_entry(&code_dir).is_none() {
+        let extracted = extract_embedded_zip(&exe, &base_dir);
+        if !extracted {
+            let _ = fs::create_dir_all(&code_dir);
+            let _ = write_embedded_assets_to(&code_dir);
+        }
+    }
 
-let has_embedding = has_embedded_zip(&exe);
-
-if !fallback_pathIndex.exists() {
-    // Matérialise TOUT le contenu de assets/ dans code_dir
-    let has_embedding = extract_embedded_zip(&exe, &base_dir);
-    if !has_embedding {
-       let _ = fs::create_dir_all(&code_dir);
-    let _ = write_embedded_assets_to(&code_dir);
-    } 
-
-    // Votre logique existante
-
-} 
-
-    run_tauri_serving_dir(code_dir, has_embedded_zip(&exe));
+    run_tauri_serving_dir(code_dir, has_embedding);
 }

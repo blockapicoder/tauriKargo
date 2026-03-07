@@ -139,7 +139,7 @@ export class Explorateur {
                     try {
                         const children = await this.tauriKargoClient.explorer({ path: e.path })
                         if (children.type === "directory") {
-                            if (this.typeAction==="addApp" && children.content.some((e) => ['index.ts', 'index.html', 'index.js'].includes(e.name))) {
+                            if (this.typeAction==="addApp" && children.content.some((e) => ['index.ts', 'index.html', 'index.js','index.json'].includes(e.name))) {
                                 if (Object.values(applications.applications).every((a) => a.code !== e.path)) {
                                     const rep: ApplicationRepertoire = new ApplicationRepertoire()
                                     rep.nom = e.path
