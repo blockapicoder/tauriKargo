@@ -1,3 +1,11 @@
-{
-    "deno.enable": false
-}
+    {
+        "deno.enable": false,
+        "editor.quickSuggestions": {
+            "comments": "off",
+            "strings": "off",
+            "other": "off"
+        },
+        "github.copilot.enable": {
+            "*": false
+        }
+    }

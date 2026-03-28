@@ -1,6 +1,7 @@
 import * as tools from './tools'
 import { boot, defineVue } from "./node_modules/tauri-kargo-tools/src/vue"
 import { Explorateur } from './explorer';
+import { LanceurTest } from './lanceur-test';
 
 interface Execution {
     window: Window
@@ -125,6 +126,12 @@ export class Lanceur {
     explorer() {
         return new Explorateur()
     }
+    tester() {
+        const r=  new LanceurTest()
+        r.repertoireProjet = this.applicationChemin
+        r.lanceur = this
+        return r
+    }
     creerModalPackager() {
         const name = this.names[this.selections[0]]
         this.modelPackager = new ModalPackager()
@@ -197,6 +204,8 @@ defineVue(Lanceur, (vue) => {
             vue.select({ mode: "dropdown", list: "names", displayMethod: "afficherName", selection: "selections", update: "selectionnerName", width: "80%" })
             vue.staticBootVue({ factory: "explorer", label: "Explorer" })
             vue.staticButton({ action: "executer", label: "Executer", enable: "activerAction" })
+            vue.staticBootVue({ factory: "tester", label: "Tester" , enable: "activerAction" })
+           
             vue.staticButton({ action: "supprimer", label: "Supprimer", enable: "activerAction" })
             vue.dialog({ name: "modelPackager", action: "creerModalPackager", label: "Packager", enable: "activerAction", width: 300, height: 150 })
         })

@@ -652,15 +652,7 @@ async fn api_use_config(
             }),
         );
     }
-    if !execdir.is_dir() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(UseConfigResp {
-                ok: false,
-                message: "executable n'est pas un dossier".into(),
-            }),
-        );
-    }
+
 
     {
         let mut w = state.root.write().await;
@@ -2164,6 +2156,8 @@ fn make_app_router(state: AppState) -> Router {
           .route("/api/file/*file",post(api_write_file).delete(api_delete_file))
         // modifier la base /api/file via body { path: string }
         .route("/api/current-directory", post(api_current_directory))
+       .route("/api/current-directory", get(api_get_current_directory))
+       
         .route("/api/directory/create", post(api_directory_create))
         .route("/api/typescript/transpile", post(api_typescript_transpile))
         .route("/api/typescript/ast", post(api_typescript_ast))
@@ -2247,7 +2241,22 @@ async fn spawn_additional_server(
 
     Ok(port)
 }
+/*--------------------- /api/current-directory -------------------- */
+ async fn api_get_current_directory(
+     State(state): State<AppState>,
+ ) -> (StatusCode, Json<CurrentDirResp>) {
+     let current = state.file_path.read().await.clone();
+     let current = to_abs_string(&current).await;
 
+     (
+         StatusCode::OK,
+         Json(CurrentDirResp {
+             ok: true,
+             message: "Répertoire courant des fichiers".into(),
+             current,
+         }),
+     )
+ }
 /* -------------------- /api/newServer -------------------- */
 #[derive(Deserialize)]
 struct NewServerReq {
