@@ -415,6 +415,83 @@ fn transpile_ts_file(ts_path: &PathBuf) -> Result<String> {
         _ => Ok(fs::read_to_string(ts_path)?),
     }
 } 
+// api allRunStatus : liste les processus lancés par l'app (via /api/run) avec leur statut actuel (running + exit code si terminé)
+#[derive(Serialize)]
+struct AllRunStatusItem {
+    id: u64,
+    pid: Option<u32>,
+    command: String,
+    executableName: String,
+    arguments: Vec<String>,
+    running: bool,
+    status: Option<i32>,
+}
+
+#[derive(Serialize)]
+struct AllRunStatusResp {
+    ok: bool,
+    message: String,
+    items: Vec<AllRunStatusItem>,
+}
+
+async fn api_all_run_status(
+    State(state): State<AppState>,
+) -> (StatusCode, Json<AllRunStatusResp>) {
+    let mut items = Vec::new();
+
+    for entry in state.procs.iter() {
+        let id = *entry.key();
+        let info_arc = entry.value().clone();
+
+        let mut pi = info_arc.lock().unwrap();
+        let mut running = false;
+        let mut status_code = pi.exit_status;
+
+        if let Some(ch) = pi.child.as_mut() {
+            match ch.try_wait() {
+                Ok(Some(st)) => {
+                    status_code = st.code();
+                    pi.exit_status = status_code;
+                    pi.child = None;
+                }
+                Ok(None) => {
+                    running = true;
+                    status_code = None;
+                }
+                Err(_) => {
+                    continue;
+                }
+            }
+        }
+
+        if running {
+            let command = if pi.args.is_empty() {
+                pi.name.clone()
+            } else {
+                format!("{} {}", pi.name, pi.args.join(" "))
+            };
+
+            items.push(AllRunStatusItem {
+                id,
+                pid: pi.pid,
+                command,
+                executableName: pi.name.clone(),
+                arguments: pi.args.clone(),
+                running,
+                status: status_code,
+            });
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(AllRunStatusResp {
+            ok: true,
+            message: format!("{} processus en cours", items.len()),
+            items,
+        }),
+    )
+}
 /* -------------------- /api/unzip -------------------- */
 // --- types + helper (placer près des autres APIs) ---
 #[derive(serde::Deserialize)]
@@ -2193,6 +2270,7 @@ fn make_app_router(state: AppState) -> Router {
         .route("/api/run/status", post(api_run_status))
         .route("/api/run/stop", post(api_run_stop))
         .route("/api/run/stopAll", post(api_run_stop_all))
+        .route("/api/allRunStatus", get(api_all_run_status).post(api_all_run_status))
         // nouvelles routes:
         .route("/api/newServer", post(api_new_server))
         .route("/api/stop", post(api_stop_server))
