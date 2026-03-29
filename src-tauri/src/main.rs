@@ -67,6 +67,13 @@ fn write_embedded_assets_to(code_dir: &Path) -> io::Result<()> {
         .extract(code_dir)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
 }
+
+#[derive(Clone)]
+struct ChildServerHandle {
+    shutdown: Arc<StdMutex<Option<oneshot::Sender<()>>>>,
+    state: AppState,
+}
+
 /* -------------------- État & modèles -------------------- */
 #[derive(Clone)]
 struct AppState {
@@ -80,8 +87,8 @@ struct AppState {
     procs: Arc<DashMap<u64, Arc<StdMutex<ProcInfo>>>>,
     next_proc_id: Arc<AtomicU64>,
 
-    // Registre des serveurs enfants { port -> shutdown_tx }
-    servers: Arc<DashMap<u16, Arc<StdMutex<Option<oneshot::Sender<()>>>>>>,
+    // Registre des serveurs enfants { port -> shutdown + état du serveur enfant }
+    servers: Arc<DashMap<u16, ChildServerHandle>>,
     // Port de CE serveur (si serveur enfant)
     self_port: Option<u16>,
     // Handle d'arrêt de CE serveur (si serveur enfant)
@@ -415,83 +422,6 @@ fn transpile_ts_file(ts_path: &PathBuf) -> Result<String> {
         _ => Ok(fs::read_to_string(ts_path)?),
     }
 } 
-// api allRunStatus : liste les processus lancés par l'app (via /api/run) avec leur statut actuel (running + exit code si terminé)
-#[derive(Serialize)]
-struct AllRunStatusItem {
-    id: u64,
-    pid: Option<u32>,
-    command: String,
-    executableName: String,
-    arguments: Vec<String>,
-    running: bool,
-    status: Option<i32>,
-}
-
-#[derive(Serialize)]
-struct AllRunStatusResp {
-    ok: bool,
-    message: String,
-    items: Vec<AllRunStatusItem>,
-}
-
-async fn api_all_run_status(
-    State(state): State<AppState>,
-) -> (StatusCode, Json<AllRunStatusResp>) {
-    let mut items = Vec::new();
-
-    for entry in state.procs.iter() {
-        let id = *entry.key();
-        let info_arc = entry.value().clone();
-
-        let mut pi = info_arc.lock().unwrap();
-        let mut running = false;
-        let mut status_code = pi.exit_status;
-
-        if let Some(ch) = pi.child.as_mut() {
-            match ch.try_wait() {
-                Ok(Some(st)) => {
-                    status_code = st.code();
-                    pi.exit_status = status_code;
-                    pi.child = None;
-                }
-                Ok(None) => {
-                    running = true;
-                    status_code = None;
-                }
-                Err(_) => {
-                    continue;
-                }
-            }
-        }
-
-        if running {
-            let command = if pi.args.is_empty() {
-                pi.name.clone()
-            } else {
-                format!("{} {}", pi.name, pi.args.join(" "))
-            };
-
-            items.push(AllRunStatusItem {
-                id,
-                pid: pi.pid,
-                command,
-                executableName: pi.name.clone(),
-                arguments: pi.args.clone(),
-                running,
-                status: status_code,
-            });
-        }
-    }
-
-    (
-        StatusCode::OK,
-        Json(AllRunStatusResp {
-            ok: true,
-            message: format!("{} processus en cours", items.len()),
-            items,
-        }),
-    )
-}
 /* -------------------- /api/unzip -------------------- */
 // --- types + helper (placer près des autres APIs) ---
 #[derive(serde::Deserialize)]
@@ -1466,28 +1396,77 @@ async fn api_run_stop(
     if let Some(entry) = state.procs.get(&req.id) {
         let info_arc = entry.value().clone();
         let mut pi = info_arc.lock().unwrap();
+
         if let Some(ch) = pi.child.as_mut() {
-            match ch.kill() {
-                Ok(_) => {
-                    let _ = ch.wait();
-                    pi.exit_status = Some(-1);
+            match ch.try_wait() {
+                Ok(Some(st)) => {
+                    pi.exit_status = st.code();
                     pi.child = None;
                     return (
                         StatusCode::OK,
                         Json(ProcStopResp {
                             ok: true,
-                            message: "Processus tué".into(),
+                            message: "Déjà terminé".into(),
                         }),
                     );
+                }
+                Ok(None) => {
+                    match ch.kill() {
+                        Ok(_) => {
+                            let _ = ch.wait();
+                            pi.exit_status = Some(-1);
+                            pi.child = None;
+                            return (
+                                StatusCode::OK,
+                                Json(ProcStopResp {
+                                    ok: true,
+                                    message: "Processus tué".into(),
+                                }),
+                            );
+                        }
+                        Err(e) => {
+                            match ch.try_wait() {
+                                Ok(Some(st)) => {
+                                    pi.exit_status = st.code();
+                                    pi.child = None;
+                                    return (
+                                        StatusCode::OK,
+                                        Json(ProcStopResp {
+                                            ok: true,
+                                            message: "Déjà terminé".into(),
+                                        }),
+                                    );
+                                }
+                                Ok(None) => {
+                                    return (
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        Json(ProcStopResp {
+                                            ok: false,
+                                            message: format!("Échec kill: {e}"),
+                                        }),
+                                    );
+                                }
+                                Err(e2) => {
+                                    return (
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        Json(ProcStopResp {
+                                            ok: false,
+                                            message: format!("Échec kill: {e}; try_wait: {e2}"),
+                                        }),
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(ProcStopResp {
                             ok: false,
-                            message: format!("Échec kill: {e}"),
+                            message: format!("try_wait error: {e}"),
                         }),
-                    )
+                    );
                 }
             }
         } else {
@@ -1506,6 +1485,83 @@ async fn api_run_stop(
         Json(ProcStopResp {
             ok: false,
             message: "id inconnu".into(),
+        }),
+    )
+}
+
+#[derive(Serialize)]
+struct AllRunStatusItem {
+    id: u64,
+    pid: Option<u32>,
+    command: String,
+    executableName: String,
+    arguments: Vec<String>,
+    running: bool,
+    status: Option<i32>,
+}
+
+#[derive(Serialize)]
+struct AllRunStatusResp {
+    ok: bool,
+    message: String,
+    items: Vec<AllRunStatusItem>,
+}
+
+async fn api_all_run_status(
+    State(state): State<AppState>,
+) -> (StatusCode, Json<AllRunStatusResp>) {
+    let mut items = Vec::new();
+
+    for entry in state.procs.iter() {
+        let id = *entry.key();
+        let info_arc = entry.value().clone();
+
+        let mut pi = info_arc.lock().unwrap();
+        let mut running = false;
+        let mut status_code = pi.exit_status;
+
+        if let Some(ch) = pi.child.as_mut() {
+            match ch.try_wait() {
+                Ok(Some(st)) => {
+                    status_code = st.code();
+                    pi.exit_status = status_code;
+                    pi.child = None;
+                }
+                Ok(None) => {
+                    running = true;
+                    status_code = None;
+                }
+                Err(_) => {
+                    continue;
+                }
+            }
+        }
+
+        if running {
+            let command = if pi.args.is_empty() {
+                pi.name.clone()
+            } else {
+                format!("{} {}", pi.name, pi.args.join(" "))
+            };
+
+            items.push(AllRunStatusItem {
+                id,
+                pid: pi.pid,
+                command,
+                executableName: pi.name.clone(),
+                arguments: pi.args.clone(),
+                running,
+                status: status_code,
+            });
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(AllRunStatusResp {
+            ok: true,
+            message: format!("{} processus en cours", items.len()),
+            items,
         }),
     )
 }
@@ -2268,9 +2324,9 @@ fn make_app_router(state: AppState) -> Router {
 
         .route("/api/run", post(api_run))
         .route("/api/run/status", post(api_run_status))
+        .route("/api/allRunStatus", get(api_all_run_status).post(api_all_run_status))
         .route("/api/run/stop", post(api_run_stop))
         .route("/api/run/stopAll", post(api_run_stop_all))
-        .route("/api/allRunStatus", get(api_all_run_status).post(api_all_run_status))
         // nouvelles routes:
         .route("/api/newServer", post(api_new_server))
         .route("/api/stop", post(api_stop_server))
@@ -2316,7 +2372,7 @@ async fn spawn_additional_server(
 
     let app = make_app_router(child_state.clone());
 
-    let (tx, rx) = oneshot::channel::<()>(); // 👈 bien appeler la fonction
+    let (tx, rx) = oneshot::channel::<()>();
 
     {
         let mut guard = self_shutdown.lock().unwrap();
@@ -2324,7 +2380,13 @@ async fn spawn_additional_server(
     }
 
     let servers_map = child_state.servers.clone();
-    servers_map.insert(port, self_shutdown.clone());
+    servers_map.insert(
+        port,
+        ChildServerHandle {
+            shutdown: self_shutdown.clone(),
+            state: child_state.clone(),
+        },
+    );
 
     tauri::async_runtime::spawn(async move {
         if let Err(e) = axum::serve(listener, app)
@@ -2687,10 +2749,13 @@ async fn api_stop_server(
 ) -> (StatusCode, Json<StopServerResp>) {
     if let Some(p) = req.port {
         if let Some(entry) = state.servers.get(&p) {
-            let arc = entry.value().clone();
+            let handle = entry.value().clone();
             drop(entry);
+
+            handle.state.kill_all_children();
+
             let tx_opt = {
-                let mut guard = arc.lock().unwrap();
+                let mut guard = handle.shutdown.lock().unwrap();
                 guard.take()
             };
             if let Some(tx) = tx_opt {
@@ -2700,7 +2765,7 @@ async fn api_stop_server(
                     Json(StopServerResp {
                         ok: true,
                         port: Some(p),
-                        message: format!("Demande d'arrêt envoyée au serveur {p}"),
+                        message: format!("Serveur {p} arrêté avec tous ses processus"),
                     }),
                 );
             } else {
@@ -2725,6 +2790,8 @@ async fn api_stop_server(
     }
 
     if let Some(sh) = &state.self_shutdown {
+        state.kill_all_children();
+
         let tx_opt = {
             let mut guard = sh.lock().unwrap();
             guard.take()
@@ -2737,7 +2804,7 @@ async fn api_stop_server(
                 Json(StopServerResp {
                     ok: true,
                     port: p,
-                    message: "Demande d'arrêt envoyée (ce serveur)".into(),
+                    message: "Demande d'arrêt envoyée (ce serveur + ses processus)".into(),
                 }),
             );
         } else {
@@ -2757,8 +2824,7 @@ async fn api_stop_server(
         Json(StopServerResp {
             ok: false,
             port: None,
-            message:
-                "Ce serveur ne peut pas être arrêté via /api/stop sans préciser { port }".into(),
+            message: "port requis pour arrêter un autre serveur".into(),
         }),
     )
 }
