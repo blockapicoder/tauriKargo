@@ -629,7 +629,7 @@ async fn api_embed(Json(payload): Json<EmbedReqAny>) -> (StatusCode, Json<EmbedR
 #[derive(Deserialize)]
 struct UseConfigReq {
     code: String,
-    executable: String,
+    executable: Option<String>,
 }
 #[derive(Serialize)]
 struct UseConfigResp {
@@ -641,7 +641,6 @@ async fn api_use_config(
     Json(payload): Json<UseConfigReq>,
 ) -> (StatusCode, Json<UseConfigResp>) {
     let folder = PathBuf::from(&payload.code);
-    let execdir = PathBuf::from(&payload.executable);
 
     if !folder.is_dir() {
         return (
@@ -653,6 +652,28 @@ async fn api_use_config(
         );
     }
 
+    let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+    // On choisit le répertoire executable :
+    // - si fourni et valide => on l'utilise
+    // - si fourni mais invalide => on prend le répertoire courant et on retourne OK + ok:false
+    // - si absent/vide => on prend le répertoire courant
+    let mut execdir = current_dir.clone();
+    let mut ok = true;
+    let mut message = "Configuration appliquée (code + executable)".to_string();
+
+    if let Some(executable) = payload.executable.as_deref() {
+        let executable = executable.trim();
+        if !executable.is_empty() {
+            let requested_execdir = PathBuf::from(executable);
+            if requested_execdir.is_dir() {
+                execdir = requested_execdir;
+            } else {
+                ok = false;
+                message = "executable n'existe pas, répertoire courant utilisé".into();
+            }
+        }
+    }
 
     {
         let mut w = state.root.write().await;
@@ -662,13 +683,14 @@ async fn api_use_config(
         let mut w = state.exec_root.write().await;
         *w = tokio::fs::canonicalize(&execdir).await.unwrap_or(execdir);
     }
+
     TS_CACHE.clear();
 
     (
         StatusCode::OK,
         Json(UseConfigResp {
-            ok: true,
-            message: "Configuration appliquée (code + executable)".into(),
+            ok,
+            message,
         }),
     )
 }
