@@ -3,6 +3,7 @@
 use flate2::read::GzDecoder;
 use tar::Archive;
 
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
@@ -35,7 +36,7 @@ use tokio::io::AsyncWriteExt;
 
 use deno_ast::{
     parse_program,parse_module, EmitOptions, MediaType, ModuleSpecifier, ParseParams, TranspileModuleOptions,
-    TranspileOptions, StartSourcePos, SourceRanged
+    TranspileOptions, StartSourcePos, SourceRanged, SourceRangedForSpanned
 };
 
 use deno_ast::view::{self, NodeTrait};
@@ -121,7 +122,45 @@ impl AppState {
     }
 }
 
-static TS_CACHE: Lazy<DashMap<PathBuf, (SystemTime, Arc<String>)>> = Lazy::new(DashMap::new);
+#[derive(Clone)]
+struct ModuleServeCacheEntry {
+    source_mtime: SystemTime,
+    import_map_path: Option<PathBuf>,
+    import_map_mtime: Option<SystemTime>,
+    code: Arc<String>,
+}
+
+impl ModuleServeCacheEntry {
+    fn matches(&self, source_mtime: SystemTime, import_map: Option<&LoadedImportMap>) -> bool {
+        self.source_mtime == source_mtime
+            && self.import_map_path == import_map.map(|m| m.path.clone())
+            && self.import_map_mtime == import_map.map(|m| m.mtime)
+    }
+}
+
+#[derive(Clone)]
+struct LoadedImportMap {
+    path: PathBuf,
+    mtime: SystemTime,
+    imports: Arc<HashMap<String, String>>,
+}
+
+#[derive(Deserialize)]
+struct ImportMapFile {
+    #[serde(default)]
+    imports: HashMap<String, String>,
+}
+
+#[derive(Debug)]
+struct ImportSpecifierReplacement {
+    start: usize,
+    end: usize,
+    replacement: String,
+}
+
+static MODULE_CACHE: Lazy<DashMap<PathBuf, ModuleServeCacheEntry>> = Lazy::new(DashMap::new);
+static IMPORT_MAP_CACHE: Lazy<DashMap<PathBuf, (SystemTime, Arc<HashMap<String, String>>)>> =
+    Lazy::new(DashMap::new);
 
 /* -------------------- Helpers -------------------- */
 fn exe_title() -> String {
@@ -379,48 +418,336 @@ fn has_embedded_zip(exe_path: &Path) -> bool {
 }
 
 
+fn is_typescript_like(media_type: MediaType) -> bool {
+    matches!(
+        media_type,
+        MediaType::TypeScript
+            | MediaType::Mts
+            | MediaType::Cts
+            | MediaType::Dts
+            | MediaType::Dmts
+            | MediaType::Dcts
+            | MediaType::Tsx
+            | MediaType::Jsx
+    )
+}
+
+fn is_javascript_like(media_type: MediaType) -> bool {
+    matches!(
+        media_type,
+        MediaType::JavaScript | MediaType::Mjs | MediaType::Cjs | MediaType::Jsx | MediaType::Tsx
+    )
+}
+
+fn parse_import_map_json(content: &str) -> std::result::Result<HashMap<String, String>, String> {
+    if let Ok(file) = serde_json::from_str::<ImportMapFile>(content) {
+        if !file.imports.is_empty() {
+            return Ok(file.imports);
+        }
+    }
+
+    serde_json::from_str::<HashMap<String, String>>(content)
+        .map_err(|e| format!("importmap.json invalide: {e}"))
+}
+
+fn load_import_map(root: &Path) -> Option<LoadedImportMap> {
+    let path = root.join("importmap.json");
+    if !path.is_file() {
+        return None;
+    }
+
+    let mtime = fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+
+    if let Some(entry) = IMPORT_MAP_CACHE.get(&path) {
+        if entry.value().0 == mtime {
+            return Some(LoadedImportMap {
+                path: path.clone(),
+                mtime,
+                imports: entry.value().1.clone(),
+            });
+        }
+    }
+
+    let content = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(e) => {
+            eprintln!("⚠️ Impossible de lire {}: {}", path.display(), e);
+            return None;
+        }
+    };
+
+    let imports = match parse_import_map_json(&content) {
+        Ok(imports) => imports,
+        Err(e) => {
+            eprintln!("⚠️ {} ({})", e, path.display());
+            return None;
+        }
+    };
+
+    let imports = Arc::new(imports);
+    IMPORT_MAP_CACHE.insert(path.clone(), (mtime, imports.clone()));
+
+    Some(LoadedImportMap { path, mtime, imports })
+}
+
+fn resolve_import_map_specifier(
+    value: &str,
+    imports: &HashMap<String, String>,
+) -> Option<String> {
+    let mut candidates: Vec<(&str, &str)> = imports
+        .iter()
+        .map(|(key, mapped)| (key.as_str(), mapped.as_str()))
+        .collect();
+
+    candidates.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(b.0)));
+
+    for (key, mapped) in candidates {
+        if value == key {
+            return Some(mapped.to_string());
+        }
+
+        if !value.starts_with(key) {
+            continue;
+        }
+
+        let is_prefix_match = if key.ends_with('/') {
+            true
+        } else {
+            value.as_bytes().get(key.len()).copied() == Some(b'/')
+        };
+
+        if !is_prefix_match {
+            continue;
+        }
+
+        let suffix = &value[key.len()..];
+
+        let joined = if mapped.ends_with('/') && suffix.starts_with('/') {
+            format!("{}{}", &mapped[..mapped.len() - 1], suffix)
+        } else if !mapped.ends_with('/') && !suffix.is_empty() && !suffix.starts_with('/') {
+            format!("{}/{}", mapped, suffix)
+        } else {
+            format!("{}{}", mapped, suffix)
+        };
+
+        return Some(joined);
+    }
+
+    None
+}
+
+fn maybe_push_import_replacement(
+    replacements: &mut Vec<ImportSpecifierReplacement>,
+    value: &str,
+    range: deno_ast::SourceRange,
+    imports: &HashMap<String, String>,
+) {
+    let Some(mapped) = resolve_import_map_specifier(value, imports) else {
+        return;
+    };
+
+    let replacement = match serde_json::to_string(&mapped) {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+
+    let byte_range = range.as_byte_range(StartSourcePos::START_SOURCE_POS);
+    replacements.push(ImportSpecifierReplacement {
+        start: byte_range.start,
+        end: byte_range.end,
+        replacement,
+    });
+}
+
+fn collect_import_replacements(
+    parsed: &deno_ast::ParsedSource,
+    imports: &HashMap<String, String>,
+) -> Vec<ImportSpecifierReplacement> {
+    let mut replacements = Vec::new();
+
+    let program = parsed.program();
+    let module = match program.as_ref() {
+        deno_ast::swc::ast::Program::Module(module) => module,
+        deno_ast::swc::ast::Program::Script(_) => return replacements,
+    };
+
+    for item in &module.body {
+        match item {
+            deno_ast::swc::ast::ModuleItem::ModuleDecl(decl) => match decl {
+                deno_ast::swc::ast::ModuleDecl::Import(n) => {
+                    let src = n.src.as_ref();
+                    maybe_push_import_replacement(
+                        &mut replacements,
+                        &src.value.to_string(),
+                        src.range(),
+                        imports,
+                    );
+                }
+                deno_ast::swc::ast::ModuleDecl::ExportAll(n) => {
+                    let src = n.src.as_ref();
+                    maybe_push_import_replacement(
+                        &mut replacements,
+                        &src.value.to_string(),
+                        src.range(),
+                        imports,
+                    );
+                }
+                deno_ast::swc::ast::ModuleDecl::ExportNamed(n) => {
+                    if let Some(src) = n.src.as_deref() {
+                        maybe_push_import_replacement(
+                            &mut replacements,
+                            &src.value.to_string(),
+                            src.range(),
+                            imports,
+                        );
+                    }
+                }
+                _ => {}
+            },
+            deno_ast::swc::ast::ModuleItem::Stmt(_) => {}
+        }
+    }
+
+    replacements
+}
+
+fn apply_import_map_to_javascript_source(
+    source_path: &Path,
+    source: String,
+    media_type: MediaType,
+    import_map: Option<&LoadedImportMap>,
+) -> String {
+    let Some(import_map) = import_map else {
+        return source;
+    };
+
+    if import_map.imports.is_empty() {
+        return source;
+    }
+
+    let specifier = match ModuleSpecifier::from_file_path(source_path) {
+        Ok(specifier) => specifier,
+        Err(_) => return source,
+    };
+
+    let parsed = match parse_module(ParseParams {
+        specifier,
+        text: Arc::<str>::from(source.clone()),
+        media_type,
+        capture_tokens: false,
+        maybe_syntax: None,
+        scope_analysis: false,
+    }) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            eprintln!(
+                "⚠️ Analyse importmap ignorée pour {}: {}",
+                source_path.display(),
+                e
+            );
+            return source;
+        }
+    };
+
+    let mut replacements = collect_import_replacements(&parsed, import_map.imports.as_ref());
+    if replacements.is_empty() {
+        return source;
+    }
+
+    replacements.sort_by(|a, b| b.start.cmp(&a.start));
+    let mut rewritten = source;
+    for replacement in replacements {
+        if replacement.start <= replacement.end && replacement.end <= rewritten.len() {
+            rewritten.replace_range(replacement.start..replacement.end, &replacement.replacement);
+        }
+    }
+
+    rewritten
+}
+
+fn read_module_for_serving(
+    source_path: &PathBuf,
+    import_map: Option<&LoadedImportMap>,
+) -> Result<String> {
+    let raw_source = fs::read_to_string(source_path)?;
+    let media_type = MediaType::from_path(source_path);
+
+    if is_typescript_like(media_type) {
+        let specifier = ModuleSpecifier::from_file_path(source_path)
+            .map_err(|_| anyhow::anyhow!("URL invalide pour {}", source_path.display()))?;
+
+        let parsed = parse_module(ParseParams {
+            specifier,
+            text: Arc::<str>::from(raw_source),
+            media_type,
+            capture_tokens: false,
+            maybe_syntax: None,
+            scope_analysis: false,
+        })?;
+
+        let emitted = parsed
+            .transpile(
+                &TranspileOptions {
+                    use_ts_decorators: false,
+                    use_decorators_proposal: false,
+                    emit_metadata: false,
+                    verbatim_module_syntax: false,
+                    ..Default::default()
+                },
+                &TranspileModuleOptions { ..Default::default() },
+                &EmitOptions { ..Default::default() },
+            )?
+            .into_source();
+
+        return Ok(apply_import_map_to_javascript_source(
+            source_path,
+            emitted.text,
+            MediaType::JavaScript,
+            import_map,
+        ));
+    }
+
+    if is_javascript_like(media_type) {
+        return Ok(apply_import_map_to_javascript_source(
+            source_path,
+            raw_source,
+            media_type,
+            import_map,
+        ));
+    }
+
+    Ok(raw_source)
+}
+
+fn load_cached_module_for_serving(source_path: &PathBuf, root: &Path) -> Result<String> {
+    let source_mtime = fs::metadata(source_path)?.modified()?;
+    let import_map = load_import_map(root);
+
+    if let Some(entry) = MODULE_CACHE.get(source_path) {
+        if entry.value().matches(source_mtime, import_map.as_ref()) {
+            return Ok(entry.value().code.as_ref().to_owned());
+        }
+    }
+
+    let code = read_module_for_serving(source_path, import_map.as_ref())?;
+    let code_arc = Arc::new(code.clone());
+    MODULE_CACHE.insert(
+        source_path.clone(),
+        ModuleServeCacheEntry {
+            source_mtime,
+            import_map_path: import_map.as_ref().map(|m| m.path.clone()),
+            import_map_mtime: import_map.as_ref().map(|m| m.mtime),
+            code: code_arc,
+        },
+    );
+
+    Ok(code)
+}
+
 /* -------------------- Transpile TS -> JS -------------------- */
 fn transpile_ts_file(ts_path: &PathBuf) -> Result<String> {
-    let source = fs::read_to_string(ts_path)?;
-    let media_type = deno_ast::MediaType::from_path(ts_path);
-
-    match media_type {
-        MediaType::TypeScript
-        | MediaType::Mts
-        | MediaType::Cts
-        | MediaType::Dts
-        | MediaType::Dmts
-        | MediaType::Dcts => {
-            let spec = ModuleSpecifier::parse(&format!("file:///{}", ts_path.display()))
-                .expect("URL invalide");
-
-            let parsed = parse_module(ParseParams {
-                specifier: spec,
-                text: Arc::<str>::from(source),
-                media_type,
-                capture_tokens: false,
-                maybe_syntax: None,
-                scope_analysis: false,
-            })?;
-
-            let emitted = parsed
-                .transpile(
-                    &TranspileOptions {
-                        use_ts_decorators: false,
-                        use_decorators_proposal: false,
-                        emit_metadata: false,
-                        verbatim_module_syntax: false,
-                        ..Default::default()
-                    },
-                    &TranspileModuleOptions { ..Default::default() },
-                    &EmitOptions { ..Default::default() },
-                )?
-                .into_source();
-
-            Ok(emitted.text)
-        }
-        _ => Ok(fs::read_to_string(ts_path)?),
-    }
+    let root = ts_path.parent().unwrap_or_else(|| Path::new("."));
+    load_cached_module_for_serving(ts_path, root)
 } 
 /* -------------------- /api/unzip -------------------- */
 // --- types + helper (placer près des autres APIs) ---
@@ -691,7 +1018,8 @@ async fn api_use_config(
         *w = tokio::fs::canonicalize(&execdir).await.unwrap_or(execdir);
     }
 
-    TS_CACHE.clear();
+    MODULE_CACHE.clear();
+    IMPORT_MAP_CACHE.clear();
 
     (
         StatusCode::OK,
@@ -2034,54 +2362,25 @@ async fn ts_middleware(
     let uri_path = req.uri().path().to_string();
     let current_root = { state.root.read().await.clone() };
 
-    // 1) URL SANS EXTENSION -> essayer .ts puis .js
     if uri_path != "/" && Path::new(&uri_path).extension().is_none() {
         let rel = uri_path.trim_start_matches('/');
-
         let ts_path = current_root.join(format!("{rel}.ts"));
         let js_path = current_root.join(format!("{rel}.js"));
 
-        // Prefer .ts si présent (transpile -> JS)
         if ts_path.exists() {
-            match fs::metadata(&ts_path).and_then(|m| m.modified()) {
-                Ok(mtime) => {
-                    if let Some(entry) = TS_CACHE.get(&ts_path) {
-                        if entry.value().0 == mtime {
-                            let code = entry.value().1.clone();
-                            return AxumResponse::builder()
-                                .status(StatusCode::OK)
-                                .header(CONTENT_TYPE, "application/javascript")
-                                .body(Body::from(code.as_str().to_owned()))
-                                .unwrap();
-                        }
-                    }
-                    match transpile_ts_file(&ts_path) {
-                        Ok(code) => {
-                            let code_arc = Arc::new(code);
-                            TS_CACHE.insert(ts_path.clone(), (mtime, code_arc.clone()));
-                            return AxumResponse::builder()
-                                .status(StatusCode::OK)
-                                .header(CONTENT_TYPE, "application/javascript")
-                                .body(Body::from(code_arc.as_str().to_owned()))
-                                .unwrap();
-                        }
-                        Err(e) => {
-                            let msg =
-                                format!("Transpilation error for {}: {e}", ts_path.display());
-                            eprintln!("❌ {msg}");
-                            return AxumResponse::builder()
-                                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                .header(CONTENT_TYPE, mime::TEXT_PLAIN.as_ref())
-                                .body(Body::from(msg))
-                                .unwrap();
-                        }
-                    }
+            match load_cached_module_for_serving(&ts_path, &current_root) {
+                Ok(code) => {
+                    return AxumResponse::builder()
+                        .status(StatusCode::OK)
+                        .header(CONTENT_TYPE, "application/javascript")
+                        .body(Body::from(code))
+                        .unwrap();
                 }
                 Err(e) => {
-                    let msg = format!("Cannot stat {}: {e}", ts_path.display());
+                    let msg = format!("Transpilation error for {}: {e}", ts_path.display());
                     eprintln!("❌ {msg}");
                     return AxumResponse::builder()
-                        .status(StatusCode::NOT_FOUND)
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
                         .header(CONTENT_TYPE, mime::TEXT_PLAIN.as_ref())
                         .body(Body::from(msg))
                         .unwrap();
@@ -2089,14 +2388,13 @@ async fn ts_middleware(
             }
         }
 
-        // Sinon, servir le .js si présent
         if js_path.exists() {
-            match tokio::fs::read(&js_path).await {
-                Ok(bytes) => {
+            match load_cached_module_for_serving(&js_path, &current_root) {
+                Ok(code) => {
                     return AxumResponse::builder()
                         .status(StatusCode::OK)
                         .header(CONTENT_TYPE, "application/javascript")
-                        .body(Body::from(bytes))
+                        .body(Body::from(code))
                         .unwrap();
                 }
                 Err(e) => {
@@ -2110,65 +2408,36 @@ async fn ts_middleware(
                 }
             }
         }
-        // Si ni .ts ni .js n'existent → on laisse passer vers le handler suivant
     }
 
-    // 2) Comportement existant: .ts direct, ou .js avec .ts adjacent
     let mut fs_path = current_root.join(uri_path.trim_start_matches('/'));
-    let mut needs_transpile = false;
+    let mut should_serve_as_javascript = false;
 
-    if fs_path.extension().and_then(|e| e.to_str()) == Some("ts") {
-        needs_transpile = true;
+    if is_typescript_like(MediaType::from_path(&fs_path)) {
+        should_serve_as_javascript = true;
     }
-    if !needs_transpile && fs_path.extension().and_then(|e| e.to_str()) == Some("js") {
+    if !should_serve_as_javascript && fs_path.extension().and_then(|e| e.to_str()) == Some("js") {
         let ts_candidate = fs_path.with_extension("ts");
         if ts_candidate.exists() {
             fs_path = ts_candidate;
-            needs_transpile = true;
+            should_serve_as_javascript = true;
         }
     }
 
-    if needs_transpile && fs_path.exists() {
-        match fs::metadata(&fs_path).and_then(|m| m.modified()) {
-            Ok(mtime) => {
-                if let Some(entry) = TS_CACHE.get(&fs_path) {
-                    if entry.value().0 == mtime {
-                        let code = entry.value().1.clone();
-                        return AxumResponse::builder()
-                            .status(StatusCode::OK)
-                            .header(CONTENT_TYPE, "application/javascript")
-                            .body(Body::from(code.as_str().to_owned()))
-                            .unwrap();
-                    }
-                }
-
-                match transpile_ts_file(&fs_path) {
-                    Ok(code) => {
-                        let code_arc = Arc::new(code);
-                        TS_CACHE.insert(fs_path.clone(), (mtime, code_arc.clone()));
-                        return AxumResponse::builder()
-                            .status(StatusCode::OK)
-                            .header(CONTENT_TYPE, "application/javascript")
-                            .body(Body::from(code_arc.as_str().to_owned()))
-                            .unwrap();
-                    }
-                    Err(e) => {
-                        let msg =
-                            format!("Transpilation error for {}: {e}", fs_path.display());
-                        eprintln!("❌ {msg}");
-                        return AxumResponse::builder()
-                            .status(StatusCode::INTERNAL_SERVER_ERROR)
-                            .header(CONTENT_TYPE, mime::TEXT_PLAIN.as_ref())
-                            .body(Body::from(msg))
-                            .unwrap();
-                    }
-                }
+    if should_serve_as_javascript && fs_path.exists() {
+        match load_cached_module_for_serving(&fs_path, &current_root) {
+            Ok(code) => {
+                return AxumResponse::builder()
+                    .status(StatusCode::OK)
+                    .header(CONTENT_TYPE, "application/javascript")
+                    .body(Body::from(code))
+                    .unwrap();
             }
             Err(e) => {
-                let msg = format!("Cannot stat {}: {e}", fs_path.display());
+                let msg = format!("Transpilation error for {}: {e}", fs_path.display());
                 eprintln!("❌ {msg}");
                 return AxumResponse::builder()
-                    .status(StatusCode::NOT_FOUND)
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
                     .header(CONTENT_TYPE, mime::TEXT_PLAIN.as_ref())
                     .body(Body::from(msg))
                     .unwrap();
@@ -2178,6 +2447,7 @@ async fn ts_middleware(
 
     next.run(req).await
 }
+
 
 /* -------------------- Handler statique -------------------- */
 async fn static_handler(
@@ -2208,6 +2478,28 @@ async fn static_handler(
         let candidate = root.join(&rel);
 
         if candidate.is_file() {
+            let media_type = MediaType::from_path(&candidate);
+            if is_javascript_like(media_type) || is_typescript_like(media_type) {
+                match load_cached_module_for_serving(&candidate, &root) {
+                    Ok(code) => {
+                        return AxumResponse::builder()
+                            .status(StatusCode::OK)
+                            .header(CONTENT_TYPE, "application/javascript")
+                            .body(Body::from(code))
+                            .unwrap();
+                    }
+                    Err(e) => {
+                        let msg = format!("Erreur de lecture {}: {e}", candidate.display());
+                        eprintln!("❌ {msg}");
+                        return AxumResponse::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .header(CONTENT_TYPE, mime::TEXT_PLAIN.as_ref())
+                            .body(Body::from(msg))
+                            .unwrap();
+                    }
+                }
+            }
+
             match tokio::fs::read(&candidate).await {
                 Ok(bytes) => {
                     let ct = mime_guess::from_path(&candidate)
