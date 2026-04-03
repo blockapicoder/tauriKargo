@@ -2183,9 +2183,24 @@ async fn ts_middleware(
 async fn static_handler(
     State(state): State<AppState>,
     OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
 ) -> AxumResponse {
     let root = { state.root.read().await.clone() };
     let req_path = uri.path().to_string();
+
+    let accept = headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let sec_fetch_mode = headers
+        .get("sec-fetch-mode")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let is_html_navigation =
+        sec_fetch_mode.eq_ignore_ascii_case("navigate")
+        || accept.contains("text/html");
 
     // Cas général : servir le fichier demandé (sauf pour "/")
     if req_path != "/" {
@@ -2217,30 +2232,40 @@ async fn static_handler(
             }
         }
 
-        // Fallback SPA classique : /anything -> index.html si présent
-        let index = root.join("index.html");
-        if index.is_file() {
-            match tokio::fs::read(&index).await {
-                Ok(bytes) => {
-                    return AxumResponse::builder()
-                        .status(StatusCode::OK)
-                        .header(CONTENT_TYPE, "text/html; charset=utf-8")
-                        .body(Body::from(bytes))
-                        .unwrap();
-                }
-                Err(e) => {
-                    let msg = format!("Erreur de lecture {}: {e}", index.display());
-                    eprintln!("❌ {msg}");
-                    return AxumResponse::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .header(CONTENT_TYPE, mime::TEXT_PLAIN.as_ref())
-                        .body(Body::from(msg))
-                        .unwrap();
+        // jamais de fallback SPA pour les APIs
+        if req_path.starts_with("/api/") {
+            return AxumResponse::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(CONTENT_TYPE, mime::TEXT_PLAIN.as_ref())
+                .body(Body::from("404 Not Found"))
+                .unwrap();
+        }
+
+        // fallback SPA seulement pour une vraie navigation HTML
+        if is_html_navigation {
+            let index = root.join("index.html");
+            if index.is_file() {
+                match tokio::fs::read(&index).await {
+                    Ok(bytes) => {
+                        return AxumResponse::builder()
+                            .status(StatusCode::OK)
+                            .header(CONTENT_TYPE, "text/html; charset=utf-8")
+                            .body(Body::from(bytes))
+                            .unwrap();
+                    }
+                    Err(e) => {
+                        let msg = format!("Erreur de lecture {}: {e}", index.display());
+                        eprintln!("❌ {msg}");
+                        return AxumResponse::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .header(CONTENT_TYPE, mime::TEXT_PLAIN.as_ref())
+                            .body(Body::from(msg))
+                            .unwrap();
+                    }
                 }
             }
         }
 
-        // Sinon 404
         return AxumResponse::builder()
             .status(StatusCode::NOT_FOUND)
             .header(CONTENT_TYPE, mime::TEXT_PLAIN.as_ref())
@@ -2293,7 +2318,6 @@ async fn static_handler(
             .unwrap();
     }
 
-    // Rien trouvé
     AxumResponse::builder()
         .status(StatusCode::NOT_FOUND)
         .header(CONTENT_TYPE, mime::TEXT_PLAIN.as_ref())
