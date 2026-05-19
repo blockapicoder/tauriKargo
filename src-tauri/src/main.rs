@@ -2656,10 +2656,32 @@ fn make_app_router(state: AppState) -> Router {
 }
 
 /* -------------------- Démarrage (principal) -------------------- */
-async fn start_static_server(state: AppState) -> Result<SocketAddr> {
-    let app = make_app_router(state.clone());
+async fn bind_loopback_listener(
+    preferred_port: Option<u16>,
+) -> io::Result<(tokio::net::TcpListener, SocketAddr)> {
+    if let Some(port) = preferred_port {
+        match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+            Ok(listener) => {
+                let addr = listener.local_addr()?;
+                return Ok((listener, addr));
+            }
+            Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
+                eprintln!(
+                    "⚠️ Port {port} déjà utilisé, bascule sur un port libre automatique"
+                );
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let addr = listener.local_addr()?;
+    Ok((listener, addr))
+}
+
+async fn start_static_server(state: AppState) -> Result<SocketAddr> {
+    let app = make_app_router(state.clone());
+    let (listener, addr) = bind_loopback_listener(None).await?;
 
     tauri::async_runtime::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
@@ -2678,11 +2700,12 @@ async fn spawn_additional_server(
     let self_shutdown = Arc::new(StdMutex::new(None));
     child_state.self_shutdown = Some(self_shutdown.clone());
 
-    let bind_port = req_port.unwrap_or(0);
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", bind_port))
+    let (listener, addr) = bind_loopback_listener(req_port)
         .await
-        .map_err(|e| format!("Bind échoué sur le port {}: {}", bind_port, e))?;
-    let addr = listener.local_addr().map_err(|e| e.to_string())?;
+        .map_err(|e| match req_port {
+            Some(port) => format!("Bind échoué sur le port {port}: {e}"),
+            None => format!("Bind échoué sur un port automatique: {e}"),
+        })?;
     let port = addr.port();
     child_state.self_port = Some(port);
 
@@ -3190,13 +3213,17 @@ fn run_tauri_serving_dir(root_dir: PathBuf, has_embedding: bool) {
             {
                 let mut gsm = app.global_shortcut_manager();
                 let w_f5 = window.clone();
-                gsm.register("F5", move || {
+                if let Err(e) = gsm.register("F5", move || {
                     let _ = w_f5.eval("location.reload()");
-                })?;
+                }) {
+                    eprintln!("⚠️ Raccourci global F5 indisponible: {e}");
+                }
                 let w_r = window.clone();
-                gsm.register("CmdOrCtrl+R", move || {
+                if let Err(e) = gsm.register("CmdOrCtrl+R", move || {
                     let _ = w_r.eval("location.reload()");
-                })?;
+                }) {
+                    eprintln!("⚠️ Raccourci global CmdOrCtrl+R indisponible: {e}");
+                }
             }
 
             let win_for_spawn = window.clone();

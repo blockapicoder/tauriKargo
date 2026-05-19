@@ -16,9 +16,9 @@ export class SnapshotAction {
 
 }
 defineVue(SnapshotAction, (vue) => {
-    vue.flow({ orientation: "row" ,gap:5}, () => {
-        vue.input({ name: "selected", inputType: "checkbox" ,width:"10%"})
-        vue.label("name",{width:"90%"})
+    vue.flow({ orientation: "row" ,gap:5,height:30}, () => {
+        vue.input({ name: "selected", inputType: "checkbox" ,width:"10%",height:30})
+        vue.label("name",{width:"90%",height:30})
     })
 })
 export class GestionSnapshot {
@@ -90,7 +90,7 @@ defineVue(GestionSnapshot, (vue) => {
             vue.staticButton({ action: "aucuneSelection", label: "Aucune sélection", width: "50%" })
             vue.staticButton({ action: "tousSelectionne", label: "Tous sélectioner", width: "50%" })
         })
-        vue.listOfVue({ list:"snapshots"})
+        vue.listOfVue({ list:"snapshots" ,wrap:false , gap:5})
         vue.flow({ orientation: "row", gap: 10 }, () => {
             vue.staticButton({ action: "annuler", label: "Annuler", width: "50%" })
             vue.staticButton({ action: "valider", label: "Valider", width: "50%" })
@@ -324,7 +324,7 @@ defineVue(LanceurTest, (vue) => {
             vue.input({ inputType: "checkbox", update: "modifierFiltre", name: "afficherTerminate" })
         })
 
-        vue.flow({ orientation: "row", gap: 5 }, () => {
+        vue.flow({ orientation: "row", gap: 5 ,height:"80vh"}, () => {
             vue.select({ list: "tests", displayMethod: "displayTest", selection: "testSelection", update: "selectionneTest", width: 200 })
             vue.select({ list: "testResults", displayMethod: "displayTestEventForFile", update: "selectionneTestResult", selection: "testResultSelection" })
         })

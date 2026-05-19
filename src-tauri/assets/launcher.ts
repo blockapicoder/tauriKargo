@@ -177,7 +177,8 @@ export class Lanceur {
         })
         if (newServeur.ok) {
             const url = `http://127.0.0.1:${newServeur.port}/`;
-            const w = window.open(url, name);
+            const windowTarget = `${name}-${newServeur.port}`;
+            const w = window.open(url, windowTarget);
             if (w) {
                 const execution: Execution = {
                     name: name,
@@ -185,7 +186,7 @@ export class Lanceur {
                     window: w
 
                 }
-                executions.messages += `\n✅ Serveur lancé sur ${name} ${url}\n🪟 Ouverture (target = ${execution.port})...`;
+                executions.messages += `\n✅ Serveur lancé sur ${name} ${url}\n🪟 Ouverture (target = ${windowTarget})...`;
 
                 executions.executions.push(execution)
                 this.messages = executions.messages
