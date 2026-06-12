@@ -1039,9 +1039,9 @@ struct GetConfigResp {
     fileBase: String,
 }
 async fn api_get_config(State(state): State<AppState>) -> (StatusCode, Json<GetConfigResp>) {
-    let code = state.root.read().await.display().to_string();
-    let exec = state.exec_root.read().await.display().to_string();
-    let file_base = state.file_path.read().await.display().to_string();
+    let code = pretty_path_string(&state.root.read().await);
+    let exec = pretty_path_string(&state.exec_root.read().await);
+    let file_base = pretty_path_string(&state.file_path.read().await);
 
     (
         StatusCode::OK,
