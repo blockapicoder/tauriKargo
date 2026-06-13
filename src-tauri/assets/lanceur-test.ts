@@ -90,7 +90,7 @@ defineVue(GestionSnapshot, (vue) => {
             vue.staticButton({ action: "aucuneSelection", label: "Aucune sélection", width: "50%" })
             vue.staticButton({ action: "tousSelectionne", label: "Tous sélectioner", width: "50%" })
         })
-        vue.listOfVue({ list:"snapshots" ,wrap:false , gap:5})
+        vue.listOfVue({ list:"snapshots" ,wrap:false , gap:5,style:{  "overflowY":"scroll" } , height:400})
         vue.flow({ orientation: "row", gap: 10 }, () => {
             vue.staticButton({ action: "annuler", label: "Annuler", width: "50%" })
             vue.staticButton({ action: "valider", label: "Valider", width: "50%" })
@@ -135,6 +135,8 @@ export class LanceurTest {
         const r = await this.client.explorer({ path: `${this.repertoireProjet}/test`, type: "array" })
         if (r.type === "directory") {
             this.tests = r.content.filter((e) => !e.path.startsWith(`${this.repertoireProjet}\\test\\snapshots\\`)).map((e) => e.name)
+            this.tests = this.tests.filter( (t)=> t.endsWith(".ts"))
+             this.tests = this.tests.filter( (t)=> t.startsWith("test-"))
         }
 
     }
