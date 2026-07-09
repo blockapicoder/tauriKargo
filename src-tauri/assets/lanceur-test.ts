@@ -180,10 +180,13 @@ export class LanceurTest {
             return;
         }
         this.stopWorkers()
-        await this.client.useConfig({ code: this.repertoireProjet, executable: this.config.executable??'.' })
-        const file = this.tests[this.testSelection[0]]
+        const cfg = await this.client.getConfig()
+        await this.client.useConfig({ code: cfg.code, executable: this.config.executable??'.' ,
+            routes: { "/app":this.repertoireProjet}
+         })   
+            const file = this.tests[this.testSelection[0]]
         this.mapTestResults[file] = []
-        const worker = new Worker(`/test/${this.tests[this.testSelection[0]]}`, { type: "module" })
+        const worker = new Worker(`/app/test/${this.tests[this.testSelection[0]]}`, { type: "module" })
         this.workers.push(worker)
         worker.addEventListener("message", async (m) => {
             this.mapTestResults[file].push(m.data)
@@ -226,10 +229,13 @@ export class LanceurTest {
         this.mapTestResults = {}
 
         this.stopWorkers()
-        await this.client.useConfig({ code: this.repertoireProjet, executable: this.config.executable??'.' })
+        const cfg = await this.client.getConfig()
+        await this.client.useConfig({ code: cfg.code, executable: this.config.executable??'.' ,
+            routes: { app:this.repertoireProjet}
+         })
         for (const file of this.tests) {
             this.mapTestResults[file] = []
-            const worker = new Worker(`/test/${file}`, { type: "module" })
+            const worker = new Worker(`/app/test/${file}`, { type: "module" })
             this.workers.push(worker)
             worker.addEventListener("message", async (m) => {
                 this.mapTestResults[file].push(m.data)

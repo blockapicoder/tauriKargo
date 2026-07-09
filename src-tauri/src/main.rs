@@ -16,14 +16,15 @@ use std::time::SystemTime;
 use anyhow::Result;
 use axum::body::{Body, Bytes};
 use axum::extract::{OriginalUri, Path as AxumPath, State};
-use axum::http::{header::CONTENT_TYPE, HeaderMap, Request, StatusCode};
+use axum::http::{header::CONTENT_TYPE, HeaderMap, Method, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response as AxumResponse;
-use axum::{middleware, routing::get, routing::post, Json, Router};
+use axum::{middleware, routing::any, routing::get, routing::post, Json, Router};
 use dashmap::DashMap;
 use mime_guess::mime;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 use tokio::sync::RwLock;
 use walkdir::WalkDir;
@@ -82,6 +83,8 @@ struct AppState {
     root: Arc<RwLock<PathBuf>>,
     // dossier des exécutables (…/nomExecutable/executable) – modifiable à chaud
     exec_root: Arc<RwLock<PathBuf>>,
+    // routage statique { base URL -> dossier servi }
+    routes: Arc<RwLock<HashMap<String, RouteTarget>>>,
     // base des opérations /api/file/* (modifiable via /api/current-directory)
     file_path: Arc<RwLock<PathBuf>>,
     // processus détachés + logs
@@ -145,6 +148,12 @@ struct LoadedImportMap {
     imports: Arc<HashMap<String, String>>,
 }
 
+#[derive(Clone)]
+enum RouteTarget {
+    Local(PathBuf),
+    Proxy(Url),
+}
+
 #[derive(Deserialize)]
 struct ImportMapFile {
     #[serde(default)]
@@ -161,6 +170,7 @@ struct ImportSpecifierReplacement {
 static MODULE_CACHE: Lazy<DashMap<PathBuf, ModuleServeCacheEntry>> = Lazy::new(DashMap::new);
 static IMPORT_MAP_CACHE: Lazy<DashMap<PathBuf, (SystemTime, Arc<HashMap<String, String>>)>> =
     Lazy::new(DashMap::new);
+static HTTP_CLIENT: Lazy<reqwest::Client> = Lazy::new(reqwest::Client::new);
 
 /* -------------------- Helpers -------------------- */
 fn exe_title() -> String {
@@ -184,6 +194,131 @@ fn safe_join(root: &Path, rel: &str) -> Option<PathBuf> {
         }
     }
     Some(out)
+}
+
+fn normalize_route_base(base: &str) -> Option<String> {
+    let trimmed = base.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let with_slash = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    };
+
+    let normalized = with_slash.trim_end_matches('/').to_string();
+    Some(if normalized.is_empty() {
+        "/".to_string()
+    } else {
+        normalized
+    })
+}
+
+fn parse_route_target(value: &str) -> Result<RouteTarget, String> {
+    let trimmed = value.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        let url = Url::parse(trimmed).map_err(|e| format!("url de route invalide: {e}"))?;
+        return Ok(RouteTarget::Proxy(url));
+    }
+
+    let dir = PathBuf::from(trimmed);
+    if !dir.is_dir() {
+        return Err(format!("n'est pas un dossier: {}", dir.display()));
+    }
+
+    Ok(RouteTarget::Local(dir))
+}
+
+async fn normalize_route_target(value: &str) -> Result<RouteTarget, String> {
+    match parse_route_target(value)? {
+        RouteTarget::Local(dir) => {
+            let dir = tokio::fs::canonicalize(&dir).await.unwrap_or(dir);
+            Ok(RouteTarget::Local(dir))
+        }
+        proxy @ RouteTarget::Proxy(_) => Ok(proxy),
+    }
+}
+
+fn find_route<'a>(
+    req_path: &str,
+    routes: &'a HashMap<String, RouteTarget>,
+) -> Option<(&'a String, &'a RouteTarget)> {
+    routes
+        .iter()
+        .filter(|(base, _)| {
+            req_path == base.as_str()
+                || base.as_str() == "/"
+                || req_path
+                    .strip_prefix(base.as_str())
+                    .map(|rest| rest.starts_with('/'))
+                    .unwrap_or(false)
+        })
+        .max_by_key(|(base, _)| base.len())
+}
+
+fn resolve_route_for_request(
+    req_path: &str,
+    root: &Path,
+    routes: &HashMap<String, RouteTarget>,
+) -> Option<(PathBuf, PathBuf)> {
+    let (base_dir, rel) = match find_route(req_path, routes) {
+        Some((base, RouteTarget::Local(dir))) => {
+            let rest = req_path
+                .strip_prefix(base.as_str())
+                .unwrap_or("")
+                .trim_start_matches('/');
+            (dir.clone(), rest)
+        }
+        Some((_, RouteTarget::Proxy(_))) => return None,
+        None => (root.to_path_buf(), req_path.trim_start_matches('/')),
+    };
+
+    safe_join(&base_dir, rel).map(|path| (base_dir, path))
+}
+
+fn build_proxy_url(base_url: &Url, base: &str, req_path: &str, query: Option<&str>) -> Url {
+    let mut target = base_url.clone();
+    let rest = req_path
+        .strip_prefix(base)
+        .unwrap_or("")
+        .trim_start_matches('/');
+    let base_path = target.path().trim_end_matches('/');
+    let path = if rest.is_empty() {
+        if base_path.is_empty() {
+            "/".to_string()
+        } else {
+            base_path.to_string()
+        }
+    } else if base_path.is_empty() || base_path == "/" {
+        format!("/{rest}")
+    } else {
+        format!("{base_path}/{rest}")
+    };
+
+    target.set_path(&path);
+    target.set_query(query);
+    target
+}
+
+fn add_cors_headers(headers: &mut axum::http::HeaderMap) {
+    headers.insert("access-control-allow-origin", "*".parse().unwrap());
+    headers.insert(
+        "access-control-allow-methods",
+        "GET,POST,PUT,PATCH,DELETE,OPTIONS,HEAD".parse().unwrap(),
+    );
+    headers.insert(
+        "access-control-allow-headers",
+        "authorization,content-type,accept,origin,x-requested-with,*"
+            .parse()
+            .unwrap(),
+    );
+}
+
+fn with_cors(mut response: AxumResponse) -> AxumResponse {
+    add_cors_headers(response.headers_mut());
+    response
 }
 
 fn default_served_base_dir() -> PathBuf {
@@ -964,6 +1099,8 @@ async fn api_embed(Json(payload): Json<EmbedReqAny>) -> (StatusCode, Json<EmbedR
 struct UseConfigReq {
     code: String,
     executable: Option<String>,
+    #[serde(default)]
+    routes: HashMap<String, String>,
 }
 #[derive(Serialize)]
 struct UseConfigResp {
@@ -986,15 +1123,43 @@ async fn api_use_config(
         );
     }
 
+    let mut routes = HashMap::new();
+    for (base, value) in payload.routes {
+        let Some(base) = normalize_route_base(&base) else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(UseConfigResp {
+                    ok: false,
+                    message: "base de route invalide".into(),
+                }),
+            );
+        };
+
+        let route_target = match normalize_route_target(&value).await {
+            Ok(route_target) => route_target,
+            Err(msg) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(UseConfigResp {
+                        ok: false,
+                        message: format!("route '{base}' invalide: {msg}"),
+                    }),
+                );
+            }
+        };
+
+        routes.insert(base, route_target);
+    }
+
     let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
-    // On choisit le répertoire executable :
+    // On choisit le rÃ©pertoire executable :
     // - si fourni et valide => on l'utilise
-    // - si fourni mais invalide => on prend le répertoire courant et on retourne OK + ok:false
-    // - si absent/vide => on prend le répertoire courant
+    // - si fourni mais invalide => on prend le rÃ©pertoire courant et on retourne OK + ok:false
+    // - si absent/vide => on prend le rÃ©pertoire courant
     let mut execdir = current_dir.clone();
     let mut ok = true;
-    let mut message = "Configuration appliquée (code + executable)".to_string();
+    let mut message = "Configuration appliquÃ©e (code + executable)".to_string();
 
     if let Some(executable) = payload.executable.as_deref() {
         let executable = executable.trim();
@@ -1004,7 +1169,7 @@ async fn api_use_config(
                 execdir = requested_execdir;
             } else {
                 ok = false;
-                message = "executable n'existe pas, répertoire courant utilisé".into();
+                message = "executable n'existe pas, rÃ©pertoire courant utilisÃ©".into();
             }
         }
     }
@@ -1016,6 +1181,10 @@ async fn api_use_config(
     {
         let mut w = state.exec_root.write().await;
         *w = tokio::fs::canonicalize(&execdir).await.unwrap_or(execdir);
+    }
+    {
+        let mut w = state.routes.write().await;
+        *w = routes;
     }
 
     MODULE_CACHE.clear();
@@ -1036,11 +1205,25 @@ struct GetConfigResp {
     ok: bool,
     code: String,
     executable: String,
+    routes: HashMap<String, String>,
     fileBase: String,
 }
 async fn api_get_config(State(state): State<AppState>) -> (StatusCode, Json<GetConfigResp>) {
     let code = pretty_path_string(&state.root.read().await);
     let exec = pretty_path_string(&state.exec_root.read().await);
+    let routes = state
+        .routes
+        .read()
+        .await
+        .iter()
+        .map(|(base, target)| {
+            let value = match target {
+                RouteTarget::Local(dir) => pretty_path_string(dir),
+                RouteTarget::Proxy(url) => url.as_str().to_string(),
+            };
+            (base.clone(), value)
+        })
+        .collect();
     let file_base = pretty_path_string(&state.file_path.read().await);
 
     (
@@ -1049,6 +1232,7 @@ async fn api_get_config(State(state): State<AppState>) -> (StatusCode, Json<GetC
             ok: true,
             code,
             executable: exec,
+            routes,
             fileBase: file_base,
         }),
     )
@@ -2361,14 +2545,20 @@ async fn ts_middleware(
 
     let uri_path = req.uri().path().to_string();
     let current_root = { state.root.read().await.clone() };
+    let routes = { state.routes.read().await.clone() };
+    if matches!(find_route(&uri_path, &routes), Some((_, RouteTarget::Proxy(_)))) {
+        return next.run(req).await;
+    }
+    let (serve_root, routed_path) = resolve_route_for_request(&uri_path, &current_root, &routes)
+        .unwrap_or_else(|| (current_root.clone(), current_root.join(uri_path.trim_start_matches('/'))));
+    let rel_path = routed_path.strip_prefix(&serve_root).unwrap_or(&routed_path);
 
     if uri_path != "/" && Path::new(&uri_path).extension().is_none() {
-        let rel = uri_path.trim_start_matches('/');
-        let ts_path = current_root.join(format!("{rel}.ts"));
-        let js_path = current_root.join(format!("{rel}.js"));
+        let ts_path = serve_root.join(rel_path).with_extension("ts");
+        let js_path = serve_root.join(rel_path).with_extension("js");
 
         if ts_path.exists() {
-            match load_cached_module_for_serving(&ts_path, &current_root) {
+            match load_cached_module_for_serving(&ts_path, &serve_root) {
                 Ok(code) => {
                     return AxumResponse::builder()
                         .status(StatusCode::OK)
@@ -2389,7 +2579,7 @@ async fn ts_middleware(
         }
 
         if js_path.exists() {
-            match load_cached_module_for_serving(&js_path, &current_root) {
+            match load_cached_module_for_serving(&js_path, &serve_root) {
                 Ok(code) => {
                     return AxumResponse::builder()
                         .status(StatusCode::OK)
@@ -2410,7 +2600,7 @@ async fn ts_middleware(
         }
     }
 
-    let mut fs_path = current_root.join(uri_path.trim_start_matches('/'));
+    let mut fs_path = routed_path;
     let mut should_serve_as_javascript = false;
 
     if is_typescript_like(MediaType::from_path(&fs_path)) {
@@ -2425,7 +2615,7 @@ async fn ts_middleware(
     }
 
     if should_serve_as_javascript && fs_path.exists() {
-        match load_cached_module_for_serving(&fs_path, &current_root) {
+        match load_cached_module_for_serving(&fs_path, &serve_root) {
             Ok(code) => {
                 return AxumResponse::builder()
                     .status(StatusCode::OK)
@@ -2450,13 +2640,102 @@ async fn ts_middleware(
 
 
 /* -------------------- Handler statique -------------------- */
+async fn proxy_route_request(
+    base: &str,
+    target_base: &Url,
+    uri: &axum::http::Uri,
+    method: Method,
+    headers: HeaderMap,
+    body: Bytes,
+) -> AxumResponse {
+    if method == Method::OPTIONS {
+        let mut response = AxumResponse::builder()
+            .status(StatusCode::NO_CONTENT)
+            .body(Body::empty())
+            .unwrap();
+        add_cors_headers(response.headers_mut());
+        return response;
+    }
+
+    let target_url = build_proxy_url(target_base, base, uri.path(), uri.query());
+    let req_method = match reqwest::Method::from_bytes(method.as_str().as_bytes()) {
+        Ok(method) => method,
+        Err(e) => {
+            return with_cors(
+                AxumResponse::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header(CONTENT_TYPE, mime::TEXT_PLAIN.as_ref())
+                    .body(Body::from(format!("Methode HTTP invalide: {e}")))
+                    .unwrap(),
+            );
+        }
+    };
+
+    let mut builder = HTTP_CLIENT.request(req_method, target_url);
+    for (name, value) in headers.iter() {
+        let lower = name.as_str().to_ascii_lowercase();
+        if matches!(
+            lower.as_str(),
+            "host" | "connection" | "content-length" | "transfer-encoding"
+        ) {
+            continue;
+        }
+        builder = builder.header(name.as_str(), value.as_bytes());
+    }
+
+    match builder.body(body.to_vec()).send().await {
+        Ok(resp) => {
+            let status = StatusCode::from_u16(resp.status().as_u16())
+                .unwrap_or(StatusCode::BAD_GATEWAY);
+            let resp_headers = resp.headers().clone();
+            match resp.bytes().await {
+                Ok(bytes) => {
+                    let mut builder = AxumResponse::builder().status(status);
+                    for (name, value) in resp_headers.iter() {
+                        let lower = name.as_str().to_ascii_lowercase();
+                        if matches!(
+                            lower.as_str(),
+                            "connection" | "content-length" | "transfer-encoding"
+                        ) {
+                            continue;
+                        }
+                        builder = builder.header(name.as_str(), value.as_bytes());
+                    }
+                    with_cors(builder.body(Body::from(bytes)).unwrap())
+                }
+                Err(e) => with_cors(
+                    AxumResponse::builder()
+                        .status(StatusCode::BAD_GATEWAY)
+                        .header(CONTENT_TYPE, mime::TEXT_PLAIN.as_ref())
+                        .body(Body::from(format!("Erreur de lecture proxy: {e}")))
+                        .unwrap(),
+                ),
+            }
+        }
+        Err(e) => with_cors(
+            AxumResponse::builder()
+                .status(StatusCode::BAD_GATEWAY)
+                .header(CONTENT_TYPE, mime::TEXT_PLAIN.as_ref())
+                .body(Body::from(format!("Erreur proxy: {e}")))
+                .unwrap(),
+        ),
+    }
+}
+
 async fn static_handler(
     State(state): State<AppState>,
     OriginalUri(uri): OriginalUri,
+    method: Method,
     headers: HeaderMap,
+    body: Bytes,
 ) -> AxumResponse {
     let root = { state.root.read().await.clone() };
+    let routes = { state.routes.read().await.clone() };
     let req_path = uri.path().to_string();
+
+    if let Some((base, RouteTarget::Proxy(target_base))) = find_route(&req_path, &routes) {
+        return proxy_route_request(base, target_base, &uri, method, headers, body).await;
+    }
 
     let accept = headers
         .get(axum::http::header::ACCEPT)
@@ -2474,13 +2753,13 @@ async fn static_handler(
 
     // Cas général : servir le fichier demandé (sauf pour "/")
     if req_path != "/" {
-        let rel = PathBuf::from(req_path.trim_start_matches('/'));
-        let candidate = root.join(&rel);
+        let (serve_root, candidate) = resolve_route_for_request(&req_path, &root, &routes)
+            .unwrap_or_else(|| (root.clone(), root.join(req_path.trim_start_matches('/'))));
 
         if candidate.is_file() {
             let media_type = MediaType::from_path(&candidate);
             if is_javascript_like(media_type) || is_typescript_like(media_type) {
-                match load_cached_module_for_serving(&candidate, &root) {
+                match load_cached_module_for_serving(&candidate, &serve_root) {
                     Ok(code) => {
                         return AxumResponse::builder()
                             .status(StatusCode::OK)
@@ -2649,8 +2928,8 @@ fn make_app_router(state: AppState) -> Router {
         // --- Explorer (POST avec body { path }) ---
         .route("/api/explorer", post(api_explorer_post))
         // statique (en dernier)
-        .route("/*path", get(static_handler))
-        .route("/", get(static_handler))
+        .route("/*path", any(static_handler))
+        .route("/", any(static_handler))
         .layer(middleware::from_fn_with_state(state.clone(), ts_middleware))
         .with_state(state)
 }
@@ -2764,6 +3043,8 @@ struct NewServerReq {
     code: String,
     executable: String,
     #[serde(default)]
+    routes: HashMap<String, String>,
+    #[serde(default)]
     port: Option<u16>,
 }
 #[derive(Serialize)]
@@ -2798,9 +3079,40 @@ struct NewServerResp {
         );
     }
 
+    let mut routes = HashMap::new();
+    for (base, value) in req.routes {
+        let Some(base) = normalize_route_base(&base) else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(NewServerResp {
+                    ok: false,
+                    port: None,
+                    message: "base de route invalide".into(),
+                }),
+            );
+        };
+
+        let route_target = match normalize_route_target(&value).await {
+            Ok(route_target) => route_target,
+            Err(msg) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(NewServerResp {
+                        ok: false,
+                        port: None,
+                        message: format!("route '{base}' invalide: {msg}"),
+                    }),
+                );
+            }
+        };
+
+        routes.insert(base, route_target);
+    }
+
     let child_state = AppState {
         root: Arc::new(RwLock::new(code)),
         exec_root: Arc::new(RwLock::new(exec)),
+        routes: Arc::new(RwLock::new(routes)),
         file_path: Arc::new(RwLock::new(
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         )),
@@ -3183,6 +3495,7 @@ fn run_tauri_serving_dir(root_dir: PathBuf, has_embedding: bool) {
     let state = AppState {
         root: Arc::new(RwLock::new(root_dir.clone())),
         exec_root: Arc::new(RwLock::new(default_exec)),
+        routes: Arc::new(RwLock::new(HashMap::new())),
         file_path: Arc::new(RwLock::new(
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         )),
