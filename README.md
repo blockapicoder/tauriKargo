@@ -18,6 +18,7 @@ At runtime, TauriKargo starts a local Axum server, opens a native Tauri window, 
 - Desktop shell powered by Tauri.
 - Local-only HTTP server bound to `127.0.0.1`.
 - Web UI serving with SPA fallback.
+- Static route mapping to extra local folders or HTTP/HTTPS proxy targets.
 - TypeScript and TSX transpilation through `deno_ast`.
 - Import map support through `importmap.json`.
 - Runtime extraction of embedded `code/` and `executable/` folders.
@@ -103,6 +104,44 @@ TauriKargo/
 ```
 
 The file API has its own current directory, controlled by `/api/current-directory`. This is where `applications.json` is read and written by the default UI.
+
+## Static Routes And Proxies
+
+`POST /api/useConfig` and `POST /api/newServer` accept an optional `routes` object:
+
+```ts
+routes?: { [base: string]: string }
+```
+
+Each key is a URL base path handled by TauriKargo. The longest matching base wins.
+
+If the value is a local directory, TauriKargo serves the rest of the request path from that directory:
+
+```json
+{
+  "code": "C:/apps/MyApp/code",
+  "executable": "C:/apps/MyApp/executable",
+  "routes": {
+    "/assets": "C:/shared/assets"
+  }
+}
+```
+
+With this configuration, `/assets/logo.png` is served from `C:/shared/assets/logo.png`.
+
+If the value starts with `http://` or `https://`, the route becomes a proxy. TauriKargo forwards the method, query string, body, and useful headers to the target URL, and adds CORS headers to proxy responses:
+
+```json
+{
+  "code": "C:/apps/MyApp/code",
+  "executable": "C:/apps/MyApp/executable",
+  "routes": {
+    "/remote-api": "https://example.com/api"
+  }
+}
+```
+
+With this configuration, `/remote-api/users?id=1` is proxied to `https://example.com/api/users?id=1`.
 
 ## How Packaging Works
 
@@ -195,7 +234,8 @@ The application exposes a local JSON API under `/api`.
 ### Configuration
 
 - `POST /api/useConfig` changes the served `code` and `executable` roots.
-- `POST /api/get-config` returns the active roots and file directory.
+- `POST /api/useConfig` can also set `routes` for local folder routing or HTTP/HTTPS proxying.
+- `POST /api/get-config` returns the active roots, routes, and file directory.
 
 ### Files And Directories
 
@@ -223,6 +263,7 @@ The application exposes a local JSON API under `/api`.
 ### Servers
 
 - `POST /api/newServer` starts an isolated child server for another `code` and `executable` pair.
+- `POST /api/newServer` also accepts `routes` for that child server.
 - `POST /api/stop` stops a child server by port, or the current child server when applicable.
 
 ### Packaging
@@ -249,7 +290,11 @@ const client = createClient();
 const config = await client.getConfig();
 await client.useConfig({
   code: "C:/path/to/code",
-  executable: "C:/path/to/executable"
+  executable: "C:/path/to/executable",
+  routes: {
+    "/assets": "C:/path/to/shared-assets",
+    "/remote-api": "https://example.com/api"
+  }
 });
 
 const run = await client.run({
