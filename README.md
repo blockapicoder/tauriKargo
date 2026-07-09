@@ -185,6 +185,39 @@ Example `index.json`:
 
 The `start` path must be relative and must point to an existing file inside the served `code/` folder.
 
+When the selected entry is a TypeScript or JavaScript module such as `index.ts`, TauriKargo does not require you to provide an `index.html`. A request to `/` generates a minimal HTML document automatically:
+
+```html
+<!doctype html>
+<meta charset="utf-8">
+<title>AppName</title>
+<body>
+<script type="module" src="/index.ts"></script>
+</body>
+```
+
+The referenced module is then served through the TypeScript pipeline. TypeScript and TSX files are transpiled on demand, and JavaScript module requests can resolve to matching TypeScript files when appropriate.
+
+If an `importmap.json` file exists at the root of the served `code/` folder, TauriKargo reads it while serving modules and rewrites matching import specifiers before transpilation/output. Both of these formats are accepted:
+
+```json
+{
+  "imports": {
+    "@app/": "/src/",
+    "toolkit": "/vendor/toolkit.ts"
+  }
+}
+```
+
+```json
+{
+  "@app/": "/src/",
+  "toolkit": "/vendor/toolkit.ts"
+}
+```
+
+For example, an import such as `import { x } from "@app/main.ts"` is served as if it targeted `/src/main.ts`.
+
 ## Development
 
 The default UI lives in:
