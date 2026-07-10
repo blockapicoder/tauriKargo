@@ -16,9 +16,9 @@ export class SnapshotAction {
 
 }
 defineVue(SnapshotAction, (vue) => {
-    vue.flow({ orientation: "row" ,gap:5,height:30}, () => {
-        vue.input({ name: "selected", inputType: "checkbox" ,width:"10%",height:30})
-        vue.label("name",{width:"90%",height:30})
+    vue.flow({ orientation: "row", gap: 5, height: 30 }, () => {
+        vue.input({ name: "selected", inputType: "checkbox", width: "10%", height: 30 })
+        vue.label("name", { width: "90%", height: 30 })
     })
 })
 export class GestionSnapshot {
@@ -90,7 +90,7 @@ defineVue(GestionSnapshot, (vue) => {
             vue.staticButton({ action: "aucuneSelection", label: "Aucune sélection", width: "50%" })
             vue.staticButton({ action: "tousSelectionne", label: "Tous sélectioner", width: "50%" })
         })
-        vue.listOfVue({ list:"snapshots" ,wrap:false , gap:5,style:{  "overflowY":"scroll" } , height:400})
+        vue.listOfVue({ list: "snapshots", wrap: false, gap: 5, style: { "overflowY": "scroll" }, height: 400 })
         vue.flow({ orientation: "row", gap: 10 }, () => {
             vue.staticButton({ action: "annuler", label: "Annuler", width: "50%" })
             vue.staticButton({ action: "valider", label: "Valider", width: "50%" })
@@ -115,6 +115,7 @@ export class LanceurTest {
     afficherTerminate = true
     afficherFailed = true
     executionUnitaire = false
+    peutCopierResultTest = false
     gestionSnapshot?: GestionSnapshot
 
     constructor() {
@@ -126,17 +127,17 @@ export class LanceurTest {
 
     }
     ouvrirGestionSnapshot() {
-   
+
         this.gestionSnapshot = new GestionSnapshot()
         this.gestionSnapshot.parent = this
-        this.gestionSnapshot.snapshots =  []
+        this.gestionSnapshot.snapshots = []
     }
     async chargerTests() {
         const r = await this.client.explorer({ path: `${this.repertoireProjet}/test`, type: "array" })
         if (r.type === "directory") {
             this.tests = r.content.filter((e) => !e.path.startsWith(`${this.repertoireProjet}\\test\\snapshots\\`)).map((e) => e.name)
-            this.tests = this.tests.filter( (t)=> t.endsWith(".ts"))
-             this.tests = this.tests.filter( (t)=> t.startsWith("test-"))
+            this.tests = this.tests.filter((t) => t.endsWith(".ts"))
+            this.tests = this.tests.filter((t) => t.startsWith("test-"))
         }
 
     }
@@ -173,7 +174,7 @@ export class LanceurTest {
         this.workers = []
     }
     async run() {
-
+this.peutCopierResultTest = false
         this.testResults = []
         this.mapTestResults = {}
         if (this.testSelection.length === 0) {
@@ -181,10 +182,11 @@ export class LanceurTest {
         }
         this.stopWorkers()
         const cfg = await this.client.getConfig()
-        await this.client.useConfig({ code: cfg.code, executable: this.config.executable??'.' ,
-            routes: { "/app":this.repertoireProjet}
-         })   
-            const file = this.tests[this.testSelection[0]]
+        await this.client.useConfig({
+            code: cfg.code, executable: this.config.executable ?? '.',
+            routes: { "/app": this.repertoireProjet }
+        })
+        const file = this.tests[this.testSelection[0]]
         this.mapTestResults[file] = []
         const worker = new Worker(`/app/test/${this.tests[this.testSelection[0]]}`, { type: "module" })
         this.workers.push(worker)
@@ -224,15 +226,17 @@ export class LanceurTest {
 
     }
     async runAll() {
+        this.peutCopierResultTest = false
 
         this.testResults = []
         this.mapTestResults = {}
 
         this.stopWorkers()
         const cfg = await this.client.getConfig()
-        await this.client.useConfig({ code: cfg.code, executable: this.config.executable??'.' ,
-            routes: { app:this.repertoireProjet}
-         })
+        await this.client.useConfig({
+            code: cfg.code, executable: this.config.executable ?? '.',
+            routes: { app: this.repertoireProjet }
+        })
         for (const file of this.tests) {
             this.mapTestResults[file] = []
             const worker = new Worker(`/app/test/${file}`, { type: "module" })
@@ -274,9 +278,15 @@ export class LanceurTest {
     }
     selectionneTest() {
         this.executionUnitaire = this.testSelection.length > 0
+             this.peutCopierResultTest = false
 
     }
     selectionneTestResult() {
+        if (this.testResults.length === 0) {
+            this.peutCopierResultTest = false
+            return 
+        }
+        this.peutCopierResultTest = this.testResults[0].event.type ==="log"
 
     }
     displayTestEvent(te: TestEvent | UpdateSnapshot) {
@@ -303,6 +313,25 @@ export class LanceurTest {
     displayTestEventForFile(t: TestEventForFile) {
         return `${t.file} ${this.displayTestEvent(t.event)}`
     }
+    copierLog() {
+        if (this.testResultSelection.length > 0) {
+            const e = this.testResults[this.testResultSelection[0]].event
+            if (e.type === "log") {
+                if (typeof e.message === "string") {
+                    navigator.clipboard.writeText(e.message)
+                } else
+                    if (typeof e.message === "number") {
+                        navigator.clipboard.writeText(e.message.toString())
+                    } else {
+                        navigator.clipboard.writeText(JSON.stringify(e.message))
+                    }
+
+
+            }
+        }
+
+
+    }
     recupererLanceur() {
         this.client.useConfig(this.config)
         return this.lanceur
@@ -320,7 +349,7 @@ defineVue(LanceurTest, (vue) => {
             vue.staticButton({ action: "run", label: "Test", enable: "executionUnitaire" })
             vue.staticButton({ action: "runAll", label: "Test tous" })
             vue.staticButton({ action: "chargerTests", label: "Recharger tests disponnible" })
-            vue.dialog({ label: "Snapshots", name: "gestionSnapshot", action: "ouvrirGestionSnapshot", width:400 })
+            vue.dialog({ label: "Snapshots", name: "gestionSnapshot", action: "ouvrirGestionSnapshot", width: 400 })
             vue.staticBootVue({ factory: "recupererLanceur", label: "Lanceur" })
             vue.staticLabel("afficher passed ✅")
             vue.input({ inputType: "checkbox", update: "modifierFiltre", name: "afficherPassed" })
@@ -330,9 +359,10 @@ defineVue(LanceurTest, (vue) => {
             vue.input({ inputType: "checkbox", update: "modifierFiltre", name: "afficherFailed" })
             vue.staticLabel("afficher terminate ✅")
             vue.input({ inputType: "checkbox", update: "modifierFiltre", name: "afficherTerminate" })
+            vue.staticButton({  label:"Copier" , action:"copierLog", enable:"peutCopierResultTest"})
         })
 
-        vue.flow({ orientation: "row", gap: 5 ,height:"80vh"}, () => {
+        vue.flow({ orientation: "row", gap: 5, height: "80vh" }, () => {
             vue.select({ list: "tests", displayMethod: "displayTest", selection: "testSelection", update: "selectionneTest", width: 200 })
             vue.select({ list: "testResults", displayMethod: "displayTestEventForFile", update: "selectionneTestResult", selection: "testResultSelection" })
         })
